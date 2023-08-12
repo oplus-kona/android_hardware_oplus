@@ -12,6 +12,9 @@ type hal_dvs_hwservice, hwservice_manager_type, protected_hwservice;
 # Face unlock
 type vendor_hal_face_hwservice, hwservice_manager_type, protected_hwservice;
 
+# Charger
+type vendor_hal_charger_hwservice, hwservice_manager_type, protected_hwservice;
+
 # Dolby
 type hal_dms_hwservice, hwservice_manager_type, protected_hwservice;
 
