@@ -35,4 +35,7 @@ rw_dir_file(system_app, vendor_sysfs_msm_perf)
 allow system_app vendor_sysfs_msm_subsys:dir search;
 allow system_app vendor_sysfs_sde_crtc:dir search;
 
+hal_client_domain(system_app, hal_telephony)
+binder_call(system_app, rild)
+
 allow system_app sysfs_leds:dir search;
