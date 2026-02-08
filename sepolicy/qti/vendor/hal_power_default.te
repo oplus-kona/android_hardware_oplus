@@ -5,7 +5,10 @@ allow hal_power_default hal_oplus_touch_aidl_service:service_manager find;
 binder_call(hal_power_default, hal_oplus_touch_aidl);
 
 rw_dir_file(hal_power_default, proc)
+rw_dir_file(hal_power_default, proc_sched)
+rw_dir_file(hal_power_default, sysfs_devices_system_cpu)
 rw_dir_file(hal_power_default, vendor_proc_display)
+rw_dir_file(hal_power_default, vendor_sysfs_msm_perf)
 rw_dir_file(hal_power_default, vendor_sysfs_sde_crtc)
 rw_dir_file(hal_power_default, sysfs_devfreq)
 rw_dir_file(hal_power_default, vendor_sysfs_devfreq)
