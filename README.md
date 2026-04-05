@@ -20,3 +20,4 @@
 | OPLUS_LINEAGE_VIBRATOR_HAL | INCLUDE_DIR | Device specific include dir path | |
 | OPLUS_LINEAGE_VIBRATOR_HAL | USE_EFFECT_STREAM | Enable effect stream feature | false |
 | OPLUS_SENSORS_FUSIONLIGHT | BACKEND_SUBHAL_LIB_NAME | FusionLight Sensors SubHAL backend library name | |
+| OPLUS_LINEAGE_VIBRATOR_HAL | USES_OPLUS_AWINIC | Enable Oplus Awinic sysfs-backed vibrator path | false |
