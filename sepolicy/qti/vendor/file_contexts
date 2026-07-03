@@ -19,6 +19,8 @@
 
 # Charging
 /dev/oplus_chg                                                               u:object_r:oplus_charger_device:s0
+/sys/module/oplus_charger/parameters/ffc_val                                 u:object_r:vendor_sysfs_fastcharge:s0
+/sys/kernel/fast_charge/force_fast_charge                                    u:object_r:vendor_sysfs_fastcharge:s0
 /(odm|vendor/odm)/bin/hw/vendor\.oplus\.hardware\.charger-V[0-9]+-service    u:object_r:hal_oplus_charger_aidl_exec:s0
 /vendor/bin/hw/vendor\.lineage\.powershare-service\.oplus                    u:object_r:hal_lineage_powershare_default_exec:s0
 /sys/devices/platform/soc/soc:oplus,chg_intf/oplus_chg/usb/fastchg_status         u:object_r:vendor_sysfs_battery_supply:s0
@@ -226,3 +228,13 @@
 /dev/sec_dev                          u:object_r:wlchg_device:s0
 /dev/wlchg                            u:object_r:wlchg_device:s0
 /dev/wls_dev                          u:object_r:wlchg_device:s0
+
+# Sys files (OPlusExtras)
+/sys/class/kgsl/kgsl-3d0/devfreq/adrenoboost                                              u:object_r:vendor_sysfs_kgsl:s0
+/sys/devices/platform/soc/ae00000.qcom,mdss_mdp/drm/card0/sde-crtc-0/measured_fps         u:object_r:sysfs_dm:s0
+/sys/devices/platform/soc/a8c000.i2c/i2c-6/6-005a/leds/vibrator/level                     u:object_r:sysfs_vibrator:s0
+/sys/devices/platform/soc/89c000.i2c/i2c-2/2-005a/leds/vibrator/level                     u:object_r:sysfs_vibrator:s0
+/sys/devices/platform/soc/88c000.i2c/i2c-10/10-005a/leds/vibrator/level                   u:object_r:sysfs_vibrator:s0
+/sys/module/msm_drm/parameters(/.*)?                                                      u:object_r:sysfs_dm:s0
+/sys/module/msm_performance/parameters/touchboost                                         u:object_r:vendor_sysfs_msm_perf:s0
+/sys/module/sync/parameters/fsync_enabled                                                 u:object_r:sysfs_sync:s0
