@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    SPDX-FileCopyrightText: 2026 The LineageOS Project
+    SPDX-License-Identifier: Apache-2.0
+-->
+<resources>
+    <string name="alert_slider_invert_colors_title">Invert colors</string>
+    <string name="alert_slider_invert_colors_summary">Invert colors of the slider dialog</string>
+</resources>
