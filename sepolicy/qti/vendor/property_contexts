@@ -33,7 +33,8 @@ vendor.oplus.video.dump.output     u:object_r:vendor_video_prop:s0
 vendor.modem_dump_action    u:object_r:vendor_modem_prop:s0
 
 # NFC
-vendor.oplus.nfc.fw.version    u:object_r:vendor_nfc_nq_prop:s0
+persist.vendor.nfc.             u:object_r:vendor_nfc_nq_prop:s0
+vendor.oplus.nfc.fw.version     u:object_r:vendor_nfc_nq_prop:s0
 
 # Radio
 odm.ril.radio.status.          u:object_r:vendor_radio_prop:s0
