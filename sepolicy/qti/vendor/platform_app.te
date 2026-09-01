@@ -5,13 +5,9 @@ r_dir_file(platform_app, vendor_sysfs_sde_crtc)
 
 allow platform_app vendor_sysfs_msm_subsys:dir search;
 
-typeattribute platform_app hal_camera_client;
-
 allow platform_app adsprpcd_file:dir r_dir_perms;
 
 allow platform_app oem_service:service_manager find;
-
-allow platform_app public_adsprpcd_file:file r_file_perms;
 
 allow platform_app vendor_camera_data_file:dir getattr;
 
