@@ -1,27 +1,26 @@
-binder_call(platform_app_36, hal_dms_default)
+binder_call(platform_app, hal_dms_default)
 
-get_prop(platform_app_36, audio_config_prop)
+get_prop(platform_app, audio_config_prop)
 
-r_dir_file(platform_app_36, vendor_sysfs_graphics)
-r_dir_file(platform_app_36, vendor_sysfs_sde_crtc)
+r_dir_file(platform_app, vendor_sysfs_graphics)
+r_dir_file(platform_app, vendor_sysfs_sde_crtc)
 
-allow platform_app_36 vendor_sysfs_msm_subsys:dir search;
+allow platform_app vendor_sysfs_msm_subsys:dir search;
 
-typeattribute platform_app_36 hal_camera_client;
+typeattribute platform_app hal_camera_client;
 
-allow platform_app_36 adsprpcd_file:dir r_dir_perms;
-allow platform_app_36 adsprpcd_file:file r_file_perms;
+allow platform_app adsprpcd_file:dir r_dir_perms;
 
-allow platform_app_36 oem_service:service_manager find;
+allow platform_app oem_service:service_manager find;
 
-allow platform_app_36 public_adsprpcd_file:file r_file_perms;
+allow platform_app public_adsprpcd_file:file r_file_perms;
 
-allow platform_app_36 vendor_camera_data_file:dir getattr;
+allow platform_app vendor_camera_data_file:dir getattr;
 
-allow platform_app_36 vendor_sysfs_kgsl:file r_file_perms;
+allow platform_app vendor_sysfs_kgsl:file r_file_perms;
 
-allow platform_app_36 vendor_xdsp_device:chr_file r_file_perms;
+allow platform_app vendor_xdsp_device:chr_file r_file_perms;
 
-rw_dir_file(platform_app_36, vendor_sysfs_battery_supply)
+rw_dir_file(platform_app, vendor_sysfs_battery_supply)
 
-binder_call(platform_app_36, hal_camera_default)
+binder_call(platform_app, hal_camera_default)
