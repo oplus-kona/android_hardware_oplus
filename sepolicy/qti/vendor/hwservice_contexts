@@ -30,11 +30,6 @@ vendor.dolby.dvs::IDvs    u:object_r:hal_dvs_hwservice:s0
 # Face unlock
 vendor.oplus.hardware.biometrics.face::IBiometricsFace    u:object_r:vendor_hal_face_hwservice:s0
 
-# Dolby
-vendor.dolby.hardware.dms::IDms                     u:object_r:hal_dms_hwservice:s0
-vendor.dolby_v3_6.hardware.dms360::IDms             u:object_r:hal_dms_hwservice:s0
-vendor.dolby_sp.hardware.dmssp::IDms                u:object_r:hal_dms_hwservice:s0
-
 # Fingerprint
 vendor.oplus.hardware.biometrics.fingerprint::IBiometricsFingerprint    u:object_r:hal_fingerprint_hwservice:s0
 
