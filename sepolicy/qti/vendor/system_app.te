@@ -1,5 +1,6 @@
-# Battery Health
+# Battery Health / Bypass Charging
 r_dir_file(system_app, vendor_sysfs_usb_supply)
+rw_dir_file(system_app, vendor_sysfs_battery_supply)
 
 # LTPO Settings
 rw_dir_file(system_app, vendor_sysfs_graphics)
@@ -7,8 +8,8 @@ rw_dir_file(system_app, vendor_sysfs_graphics)
 # Gamespace
 r_dir_file(system_app, vendor_sysfs_sde_crtc)
 
-# Led
-allow system_app sysfs_leds:dir search;
+# Led / Vibrator
+rw_dir_file(system_app, sysfs_leds)
 
 # Touchpanel
 rw_dir_file(system_app, vendor_proc_display)
@@ -37,5 +38,3 @@ allow system_app vendor_sysfs_sde_crtc:dir search;
 
 hal_client_domain(system_app, hal_telephony)
 binder_call(system_app, rild)
-
-allow system_app sysfs_leds:dir search;
