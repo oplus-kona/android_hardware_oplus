@@ -3,6 +3,7 @@
  * SPDX-FileCopyrightText: 2014-2020 Paranoid Android
  * SPDX-FileCopyrightText: 2023-2026 The LineageOS Project
  * SPDX-FileCopyrightText: 2023 Yet Another AOSP Project
+ * SPDX-FileCopyrightText: 2026 Project ASCP
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -75,14 +76,27 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
         setCanceledOnTouchOutside(false)
         setContentView(R.layout.alert_slider_dialog)
 
-        // position calculations
         val res = context.resources
+        val iconWidth = res.getDimensionPixelSize(R.dimen.alert_slider_dialog_icon_width)
+        val endPadding = res.getDimensionPixelSize(R.dimen.alert_slider_padding)
+        val silent = context.getString(R.string.alert_slider_mode_silent)
+        val vibration = context.getString(R.string.alert_slider_mode_vibration)
+        val normal = context.getString(R.string.alert_slider_mode_normal)
+        val maxTextWidth = listOf(silent, vibration, normal).maxOf {
+            textView.paint.measureText(it)
+        }.toInt()
+        val adaptiveWidth = iconWidth + maxTextWidth + endPadding + (res.displayMetrics.density * 4).toInt()
+
+        frameView.layoutParams = frameView.layoutParams.apply {
+            width = adaptiveWidth
+        }
+
         val fraction = res.getFraction(R.fraction.alert_slider_dialog_y, 1, 1)
         val widthPixels = res.displayMetrics.widthPixels
         val heightPixels = res.displayMetrics.heightPixels
-        val pads = dialogView.paddingTop * 2 // equal paddings in all 4 directions
+        val pads = dialogView.paddingTop * 2
         length =
-            if (isLandscape) res.getDimension(R.dimen.alert_slider_dialog_width).toInt()
+            if (isLandscape) adaptiveWidth
             else res.getDimension(R.dimen.alert_slider_dialog_height).toInt()
         val hv = (length + pads) * 0.5
 
@@ -125,7 +139,7 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
                 when (position) {
                     KeyHandler.POSITION_TOP -> -1
                     KeyHandler.POSITION_BOTTOM -> 1
-                    else -> 0 // KeyHandler.POSITION_MIDDLE
+                    else -> 0
                 }
 
         var endX = xPos
@@ -309,7 +323,7 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
                         else R.drawable.alert_slider_bottom_270
                     else -> R.drawable.alert_slider_middle
                 }
-            else -> base(position) // ROTATION_0 / ROTATION_180
+            else -> base(position)
         }
     }
 
