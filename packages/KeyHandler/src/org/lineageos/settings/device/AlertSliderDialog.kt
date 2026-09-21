@@ -20,6 +20,8 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.TransitionDrawable
 import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import android.view.CrossWindowBlurListeners
 import android.view.Gravity
 import android.view.Surface
@@ -28,6 +30,7 @@ import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
 import com.android.internal.graphics.drawable.BackgroundBlurDrawable
+import java.util.Locale
 import java.util.function.Consumer
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
@@ -42,6 +45,20 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
     private val frameView by lazy { findViewById<ViewGroup>(R.id.alert_slider_view)!! }
     private val iconView by lazy { findViewById<ImageView>(R.id.alert_slider_icon)!! }
     private val textView by lazy { findViewById<TextView>(R.id.alert_slider_text)!! }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var recordingSeconds = 0
+    private val recordingTimerRunnable =
+        object : Runnable {
+            override fun run() {
+                recordingSeconds++
+                val minutes = recordingSeconds / 60
+                val seconds = recordingSeconds % 60
+                val label = context.getString(R.string.alert_slider_recording)
+                textView.text = String.format(Locale.US, "%s %02d:%02d", label, minutes, seconds)
+                mainHandler.postDelayed(this, 1000)
+            }
+        }
 
     private val rotation: Int = context.getDisplay().getRotation()
     private val isLandscape = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270
@@ -95,7 +112,8 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
         val silent = context.getString(R.string.alert_slider_mode_silent)
         val vibration = context.getString(R.string.alert_slider_mode_vibration)
         val normal = context.getString(R.string.alert_slider_mode_normal)
-        val maxTextWidth = listOf(silent, vibration, normal).maxOf {
+        val recording = "${context.getString(R.string.alert_slider_recording)} 00:00"
+        val maxTextWidth = listOf(silent, vibration, normal, recording).maxOf {
             textView.paint.measureText(it)
         }.toInt()
         val adaptiveWidth = iconWidth + maxTextWidth + endPadding + (res.displayMetrics.density * 4).toInt()
@@ -331,23 +349,32 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
                 KeyHandler.ZEN_ALARMS_ONLY -> R.drawable.ic_alarm
                 KeyHandler.TORCH_ON -> R.drawable.ic_torch_on
                 KeyHandler.TORCH_OFF -> R.drawable.ic_torch_off
+                KeyHandler.RECORD_AUDIO -> R.drawable.ic_mic_record
                 else -> R.drawable.ic_info
             }
         )
 
-        textView.setText(
-            when (ringerMode) {
-                AudioManager.RINGER_MODE_SILENT -> R.string.alert_slider_mode_silent
-                AudioManager.RINGER_MODE_VIBRATE -> R.string.alert_slider_mode_vibration
-                AudioManager.RINGER_MODE_NORMAL -> R.string.alert_slider_mode_normal
-                KeyHandler.ZEN_PRIORITY_ONLY -> R.string.alert_slider_mode_dnd_priority_only
-                KeyHandler.ZEN_TOTAL_SILENCE -> R.string.alert_slider_mode_dnd_total_silence
-                KeyHandler.ZEN_ALARMS_ONLY -> R.string.alert_slider_mode_dnd_alarms_only
-                KeyHandler.TORCH_ON -> R.string.alert_slider_mode_torch_on
-                KeyHandler.TORCH_OFF -> R.string.alert_slider_mode_torch_off
-                else -> R.string.alert_slider_mode_none
-            }
-        )
+        mainHandler.removeCallbacks(recordingTimerRunnable)
+        if (ringerMode == KeyHandler.RECORD_AUDIO) {
+            recordingSeconds = 0
+            val label = context.getString(R.string.alert_slider_recording)
+            textView.text = String.format(Locale.US, "%s %02d:%02d", label, 0, 0)
+            mainHandler.postDelayed(recordingTimerRunnable, 1000)
+        } else {
+            textView.setText(
+                when (ringerMode) {
+                    AudioManager.RINGER_MODE_SILENT -> R.string.alert_slider_mode_silent
+                    AudioManager.RINGER_MODE_VIBRATE -> R.string.alert_slider_mode_vibration
+                    AudioManager.RINGER_MODE_NORMAL -> R.string.alert_slider_mode_normal
+                    KeyHandler.ZEN_PRIORITY_ONLY -> R.string.alert_slider_mode_dnd_priority_only
+                    KeyHandler.ZEN_TOTAL_SILENCE -> R.string.alert_slider_mode_dnd_total_silence
+                    KeyHandler.ZEN_ALARMS_ONLY -> R.string.alert_slider_mode_dnd_alarms_only
+                    KeyHandler.TORCH_ON -> R.string.alert_slider_mode_torch_on
+                    KeyHandler.TORCH_OFF -> R.string.alert_slider_mode_torch_off
+                    else -> R.string.alert_slider_mode_none
+                }
+            )
+        }
         applyUiTheme(invertColors)
     }
 
@@ -465,6 +492,7 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
     }
 
     override fun dismiss() {
+        mainHandler.removeCallbacks(recordingTimerRunnable)
         dialogView
             .animate()
             .alpha(0f)

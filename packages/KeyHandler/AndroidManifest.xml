@@ -20,6 +20,10 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="com.android.systemui.permission.PLUGIN" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <protected-broadcast android:name="com.android.systemui.doze.pulse" />
     <protected-broadcast android:name="org.lineageos.settings.UPDATE_SETTINGS" />
@@ -69,6 +73,11 @@
                 <action android:name="com.android.systemui.action.PLUGIN_OVERLAY" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".AudioRecordingService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
 
         <service
             android:name=".KeyHandler"

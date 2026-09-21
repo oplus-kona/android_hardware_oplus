@@ -41,6 +41,7 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
     private val executorService = Executors.newSingleThreadExecutor()
 
     private var wasMuted = false
+    private var isAudioRecording = false
     private val broadcastReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -95,7 +96,8 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
 
     private fun vibrateIfNeeded(mode: Int) {
         when (mode) {
-            AudioManager.RINGER_MODE_VIBRATE ->
+            AudioManager.RINGER_MODE_VIBRATE,
+            RECORD_AUDIO ->
                 vibrator.vibrate(MODE_VIBRATION_EFFECT, HARDWARE_FEEDBACK_VIBRATION_ATTRIBUTES)
             AudioManager.RINGER_MODE_NORMAL ->
                 vibrator.vibrate(MODE_NORMAL_EFFECT, HARDWARE_FEEDBACK_VIBRATION_ATTRIBUTES)
@@ -118,6 +120,11 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
             }
 
         executorService.submit {
+            if (isAudioRecording && mode != RECORD_AUDIO) {
+                AudioRecordingService.stop(context)
+                isAudioRecording = false
+            }
+
             when (mode) {
                 AudioManager.RINGER_MODE_SILENT -> {
                     setZenMode(Settings.Global.ZEN_MODE_OFF)
@@ -154,6 +161,12 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
                         }
                     if (cameraId != null) {
                         cameraManager.setTorchMode(cameraId, mode == TORCH_ON)
+                    }
+                }
+                RECORD_AUDIO -> {
+                    if (!firstRun) {
+                        AudioRecordingService.start(context)
+                        isAudioRecording = true
                     }
                 }
             }
@@ -214,6 +227,9 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
         private const val TORCH_OFFSET = 8
         const val TORCH_ON = TORCH_OFFSET + 0
         const val TORCH_OFF = TORCH_OFFSET + 1
+
+        // Recording constant
+        const val RECORD_AUDIO = 10
 
         // Vibration attributes
         private val HARDWARE_FEEDBACK_VIBRATION_ATTRIBUTES =
