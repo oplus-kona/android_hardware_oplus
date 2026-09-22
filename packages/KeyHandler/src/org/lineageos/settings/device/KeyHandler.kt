@@ -120,7 +120,7 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
             }
 
         executorService.submit {
-            if (isAudioRecording && mode != RECORD_AUDIO) {
+            if (mode != RECORD_AUDIO) {
                 AudioRecordingService.stop(context)
                 isAudioRecording = false
             }

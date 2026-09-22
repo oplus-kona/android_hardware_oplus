@@ -131,7 +131,7 @@ class AudioRecordingService : Service() {
             NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.alert_slider_recording_channel_name),
-                NotificationManager.IMPORTANCE_LOW,
+                NotificationManager.IMPORTANCE_HIGH,
             ).apply {
                 description = getString(R.string.alert_slider_recording_notification_title)
             }
@@ -152,19 +152,25 @@ class AudioRecordingService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
 
-        return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.alert_slider_recording_notification_title))
-            .setContentText(getString(R.string.alert_slider_recording_notification_text))
-            .setSmallIcon(R.drawable.ic_mic_record)
-            .addAction(
-                Notification.Action.Builder(
-                    null,
-                    getString(R.string.alert_slider_recording_stop),
-                    stopPendingIntent,
-                ).build(),
-            )
-            .setOngoing(true)
-            .build()
+        val builder =
+            Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(R.string.alert_slider_recording_notification_title))
+                .setContentText(getString(R.string.alert_slider_recording_notification_text))
+                .setSmallIcon(R.drawable.ic_mic_record)
+                .addAction(
+                    Notification.Action.Builder(
+                        null,
+                        getString(R.string.alert_slider_recording_stop),
+                        stopPendingIntent,
+                    ).build(),
+                )
+                .setOngoing(true)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+
+        return builder.build()
     }
 
     override fun onDestroy() {
@@ -183,20 +189,33 @@ class AudioRecordingService : Service() {
         var isRecording = false
             private set
 
+        private fun createServiceIntent(context: Context, action: String): Intent {
+            return Intent().apply {
+                setClassName("org.lineageos.settings.device", AudioRecordingService::class.java.name)
+                this.action = action
+            }
+        }
+
         fun start(context: Context) {
-            val intent =
-                Intent(context, AudioRecordingService::class.java).apply {
-                    action = ACTION_START_RECORDING
-                }
-            context.startForegroundService(intent)
+            val intent = createServiceIntent(context, ACTION_START_RECORDING)
+            try {
+                context.startForegroundServiceAsUser(intent, android.os.UserHandle.CURRENT)
+            } catch (e: NoSuchMethodError) {
+                context.startForegroundService(intent)
+            } catch (e: Exception) {
+                context.startForegroundService(intent)
+            }
         }
 
         fun stop(context: Context) {
-            val intent =
-                Intent(context, AudioRecordingService::class.java).apply {
-                    action = ACTION_STOP_RECORDING
-                }
-            context.startService(intent)
+            val intent = createServiceIntent(context, ACTION_STOP_RECORDING)
+            try {
+                context.startServiceAsUser(intent, android.os.UserHandle.CURRENT)
+            } catch (e: NoSuchMethodError) {
+                context.startService(intent)
+            } catch (e: Exception) {
+                context.startService(intent)
+            }
         }
     }
 }
