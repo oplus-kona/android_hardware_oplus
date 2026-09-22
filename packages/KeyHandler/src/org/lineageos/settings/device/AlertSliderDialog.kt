@@ -55,7 +55,9 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
                 val minutes = recordingSeconds / 60
                 val seconds = recordingSeconds % 60
                 val label = context.getString(R.string.alert_slider_recording)
-                textView.text = String.format(Locale.US, "%s %02d:%02d", label, minutes, seconds)
+                val text = String.format(Locale.US, "%s %02d:%02d", label, minutes, seconds)
+                textView.text = text
+                updatePillWidth(text)
                 mainHandler.postDelayed(this, 1000)
             }
         }
@@ -107,28 +109,11 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
         setContentView(R.layout.alert_slider_dialog)
 
         val res = context.resources
-        val iconWidth = res.getDimensionPixelSize(R.dimen.alert_slider_dialog_icon_width)
-        val endPadding = res.getDimensionPixelSize(R.dimen.alert_slider_padding)
-        val silent = context.getString(R.string.alert_slider_mode_silent)
-        val vibration = context.getString(R.string.alert_slider_mode_vibration)
-        val normal = context.getString(R.string.alert_slider_mode_normal)
-        val recording = "${context.getString(R.string.alert_slider_recording)} 00:00"
-        val maxTextWidth = listOf(silent, vibration, normal, recording).maxOf {
-            textView.paint.measureText(it)
-        }.toInt()
-        val adaptiveWidth = iconWidth + maxTextWidth + endPadding + (res.displayMetrics.density * 4).toInt()
-
-        frameView.layoutParams = frameView.layoutParams.apply {
-            width = adaptiveWidth
-        }
-
         val fraction = res.getFraction(R.fraction.alert_slider_dialog_y, 1, 1)
         val widthPixels = res.displayMetrics.widthPixels
         val heightPixels = res.displayMetrics.heightPixels
         val pads = dialogView.paddingTop * 2
-        length =
-            if (isLandscape) adaptiveWidth
-            else res.getDimension(R.dimen.alert_slider_dialog_height).toInt()
+        length = res.getDimension(R.dimen.alert_slider_dialog_height).toInt()
         val hv = (length + pads) * 0.5
 
         xPos =
@@ -355,27 +340,46 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
         )
 
         mainHandler.removeCallbacks(recordingTimerRunnable)
-        if (ringerMode == KeyHandler.RECORD_AUDIO) {
-            recordingSeconds = 0
-            val label = context.getString(R.string.alert_slider_recording)
-            textView.text = String.format(Locale.US, "%s %02d:%02d", label, 0, 0)
-            mainHandler.postDelayed(recordingTimerRunnable, 1000)
-        } else {
-            textView.setText(
-                when (ringerMode) {
-                    AudioManager.RINGER_MODE_SILENT -> R.string.alert_slider_mode_silent
-                    AudioManager.RINGER_MODE_VIBRATE -> R.string.alert_slider_mode_vibration
-                    AudioManager.RINGER_MODE_NORMAL -> R.string.alert_slider_mode_normal
-                    KeyHandler.ZEN_PRIORITY_ONLY -> R.string.alert_slider_mode_dnd_priority_only
-                    KeyHandler.ZEN_TOTAL_SILENCE -> R.string.alert_slider_mode_dnd_total_silence
-                    KeyHandler.ZEN_ALARMS_ONLY -> R.string.alert_slider_mode_dnd_alarms_only
-                    KeyHandler.TORCH_ON -> R.string.alert_slider_mode_torch_on
-                    KeyHandler.TORCH_OFF -> R.string.alert_slider_mode_torch_off
-                    else -> R.string.alert_slider_mode_none
-                }
-            )
-        }
+        val text =
+            if (ringerMode == KeyHandler.RECORD_AUDIO) {
+                recordingSeconds = 0
+                val label = context.getString(R.string.alert_slider_recording)
+                val initialText = String.format(Locale.US, "%s %02d:%02d", label, 0, 0)
+                mainHandler.postDelayed(recordingTimerRunnable, 1000)
+                initialText
+            } else {
+                val strResId =
+                    when (ringerMode) {
+                        AudioManager.RINGER_MODE_SILENT -> R.string.alert_slider_mode_silent
+                        AudioManager.RINGER_MODE_VIBRATE -> R.string.alert_slider_mode_vibration
+                        AudioManager.RINGER_MODE_NORMAL -> R.string.alert_slider_mode_normal
+                        KeyHandler.ZEN_PRIORITY_ONLY -> R.string.alert_slider_mode_dnd_priority_only
+                        KeyHandler.ZEN_TOTAL_SILENCE -> R.string.alert_slider_mode_dnd_total_silence
+                        KeyHandler.ZEN_ALARMS_ONLY -> R.string.alert_slider_mode_dnd_alarms_only
+                        KeyHandler.TORCH_ON -> R.string.alert_slider_mode_torch_on
+                        KeyHandler.TORCH_OFF -> R.string.alert_slider_mode_torch_off
+                        else -> R.string.alert_slider_mode_none
+                    }
+                context.getString(strResId)
+            }
+        textView.text = text
+        updatePillWidth(text)
         applyUiTheme(invertColors)
+    }
+
+    private fun updatePillWidth(text: CharSequence) {
+        val res = context.resources
+        val iconWidth = res.getDimensionPixelSize(R.dimen.alert_slider_dialog_icon_width)
+        val endPadding = res.getDimensionPixelSize(R.dimen.alert_slider_padding)
+        val textWidth = Math.ceil(textView.paint.measureText(text.toString()).toDouble()).toInt()
+        val pillWidth = iconWidth + textWidth + endPadding + (res.displayMetrics.density * 4).toInt()
+
+        if (frameView.layoutParams.width != pillWidth) {
+            frameView.layoutParams = frameView.layoutParams.apply {
+                width = pillWidth
+            }
+            frameView.requestLayout()
+        }
     }
 
     private fun applyPositionAndBackground(endX: Int, endY: Int, position: Int) {
