@@ -8,8 +8,8 @@ rw_dir_file(system_app, vendor_sysfs_graphics)
 # Gamespace
 r_dir_file(system_app, vendor_sysfs_sde_crtc)
 
-# Led / Vibrator
-rw_dir_file(system_app, sysfs_leds)
+# Led
+allow system_app sysfs_leds:dir search;
 
 # Touchpanel
 rw_dir_file(system_app, vendor_proc_display)
