@@ -6,7 +6,6 @@
 phony {
     name: "OplusEuicc",
     required: [
-        "EuiccPolicy",
         "EuiccPolicyOplus",
     ],
 }

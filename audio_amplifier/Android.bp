@@ -20,9 +20,9 @@ cc_library_shared {
         "system/media/audio_utils/include",
     ] + select(soong_config_variable("ANDROID", "target_board_platform"), {
         "kona": [
-            "hardware/qcom-caf/sm8250/audio/hal",
-            "hardware/qcom-caf/sm8250/audio/hal/audio_extn",
-            "hardware/qcom-caf/sm8250/audio/hal/msm8974",
+            "vendor/qcom/opensource/audio-hal/primary-hal/hal",
+            "vendor/qcom/opensource/audio-hal/primary-hal/hal/audio_extn",
+            "vendor/qcom/opensource/audio-hal/primary-hal/hal/msm8974",
         ],
         "holi": [
             "hardware/qcom-caf/sm8350/audio/hal",

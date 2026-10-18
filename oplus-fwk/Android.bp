@@ -17,10 +17,6 @@ java_library {
 java_library {
     name: "oplus-fwk-vibrator-lib",
     installable: false,
-    sdk_version: "core_platform",
-    libs: [
-        "framework-minus-apex-headers",
-    ],
 
     srcs: [
         "src/com/oplus/os/LinearmotorVibrator.java",
