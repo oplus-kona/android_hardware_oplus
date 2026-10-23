@@ -9,4 +9,12 @@
 
     <string name="alert_slider_invert_colors_title">Invert colors</string>
     <string name="alert_slider_invert_colors_summary">Invert colors of the slider dialog</string>
+
+    <!-- Recording mode -->
+    <string name="alert_slider_mode_record">Record audio</string>
+    <string name="alert_slider_recording">Recording</string>
+    <string name="alert_slider_recording_channel_name">Voice Recording</string>
+    <string name="alert_slider_recording_notification_title">Recording in progress</string>
+    <string name="alert_slider_recording_notification_text">Audio is recording via Alert Slider</string>
+    <string name="alert_slider_recording_stop">Stop</string>
 </resources>
