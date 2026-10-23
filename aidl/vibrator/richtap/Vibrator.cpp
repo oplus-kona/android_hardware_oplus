@@ -30,10 +30,32 @@
 #define RICHTAP_MEDIUM_STRENGTH 89
 #define RICHTAP_STRONG_STRENGTH 99
 
+// RichTap Prebaked Effect IDs (0x1000 + index)
+[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_CLICK        = 0x1000;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_DOUBLE_CLICK = 0x1001;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_TICK         = 0x1002;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_THUD         = 0x1003;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_POP          = 0x1004;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_HEAVY_CLICK  = 0x1005;
+
+// RichTap Dynamic Duration Transient IDs (0x3001..0x300b)
+[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_TEXTURE_TICK  = 0x3001;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_LIGHT_TICK    = 0x3001;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_TICK          = 0x3002;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_CLICK         = 0x3003;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_POP           = 0x3004;
+[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_HEAVY_CLICK   = 0x3006;
+
 #ifdef USES_OPLUS_AWINIC
-#define RICHTAP_OPLUS_ACTIVATE_NODE "/sys/class/leds/vibrator/oplus_activate"
-#define RICHTAP_OPLUS_DURATION_NODE "/sys/class/leds/vibrator/oplus_duration"
-#define RICHTAP_OPLUS_STATE_NODE "/sys/class/leds/vibrator/oplus_state"
+#define RICHTAP_OPLUS_ACTIVATE_NODE   "/sys/class/leds/vibrator/oplus_activate"
+#define RICHTAP_OPLUS_DURATION_NODE   "/sys/class/leds/vibrator/oplus_duration"
+#define RICHTAP_OPLUS_STATE_NODE      "/sys/class/leds/vibrator/oplus_state"
+#define RICHTAP_ACTIVATE_NODE         "/sys/class/leds/vibrator/activate"
+#define RICHTAP_DURATION_NODE         "/sys/class/leds/vibrator/duration"
+#define RICHTAP_STATE_NODE            "/sys/class/leds/vibrator/state"
+#define RICHTAP_BRIGHTNESS_NODE       "/sys/class/leds/vibrator/brightness"
+#define RICHTAP_VMAX_NODE             "/sys/class/leds/vibrator/vmax"
+#define RICHTAP_WAVEFORM_INDEX_NODE   "/sys/class/leds/vibrator/waveform_index"
 #endif
 
 namespace aidl {
@@ -88,27 +110,88 @@ static int writeNode(const char* path, int value) {
 }
 
 static bool hasSysfsOnOffSupport() {
-    return access(RICHTAP_OPLUS_ACTIVATE_NODE, F_OK) == 0;
+    return access(RICHTAP_OPLUS_ACTIVATE_NODE, F_OK) == 0 ||
+           access(RICHTAP_ACTIVATE_NODE, F_OK) == 0;
 }
 
 static int sysfsOn(int32_t timeoutMs) {
-    int ret = writeNode(RICHTAP_OPLUS_STATE_NODE, "1");
-    if (ret) {
-        return ret;
+    if (access(RICHTAP_OPLUS_ACTIVATE_NODE, F_OK) == 0) {
+        int ret = writeNode(RICHTAP_OPLUS_STATE_NODE, "1");
+        if (ret) {
+            return ret;
+        }
+
+        ret = writeNode(RICHTAP_OPLUS_DURATION_NODE, timeoutMs);
+        if (ret) {
+            return ret;
+        }
+
+        return writeNode(RICHTAP_OPLUS_ACTIVATE_NODE, "1");
+    } else if (access(RICHTAP_ACTIVATE_NODE, F_OK) == 0) {
+        int ret = writeNode(RICHTAP_STATE_NODE, "1");
+        if (ret) {
+            return ret;
+        }
+
+        ret = writeNode(RICHTAP_DURATION_NODE, timeoutMs);
+        if (ret) {
+            return ret;
+        }
+
+        return writeNode(RICHTAP_ACTIVATE_NODE, "1");
     }
 
-    ret = writeNode(RICHTAP_OPLUS_DURATION_NODE, timeoutMs);
-    if (ret) {
-        return ret;
-    }
-
-    return writeNode(RICHTAP_OPLUS_ACTIVATE_NODE, "1");
+    return -ENOENT;
 }
 
 static int sysfsOff() {
-    return writeNode(RICHTAP_OPLUS_ACTIVATE_NODE, "0");
+    if (access(RICHTAP_OPLUS_ACTIVATE_NODE, F_OK) == 0) {
+        return writeNode(RICHTAP_OPLUS_ACTIVATE_NODE, "0");
+    } else if (access(RICHTAP_ACTIVATE_NODE, F_OK) == 0) {
+        return writeNode(RICHTAP_ACTIVATE_NODE, "0");
+    }
+
+    return -ENOENT;
+}
+
+static int sysfsWaveform(int waveformIndex, int vmax) {
+    if (access(RICHTAP_BRIGHTNESS_NODE, F_OK) != 0 ||
+        access(RICHTAP_WAVEFORM_INDEX_NODE, F_OK) != 0) {
+        return -ENOENT;
+    }
+
+    if (access(RICHTAP_VMAX_NODE, F_OK) == 0 && vmax > 0) {
+        writeNode(RICHTAP_VMAX_NODE, vmax);
+    }
+
+    writeNode(RICHTAP_WAVEFORM_INDEX_NODE, waveformIndex);
+    return writeNode(RICHTAP_BRIGHTNESS_NODE, "1");
 }
 #endif
+
+static int32_t playTactileEffect(uint32_t aacEffectId, int32_t strength,
+                                 int hwWaveformIndex __unused, int hwVmax __unused) {
+    // 1. Attempt RichTap AAC looper playback
+    int32_t dur = aac_vibra_looper_prebaked_effect(aacEffectId, strength);
+    if (dur > 0) {
+        return dur;
+    }
+
+#ifdef USES_OPLUS_AWINIC
+    // 2. Fallback to AW8697 native hardware RAM waveform via sysfs
+    int ret = sysfsWaveform(hwWaveformIndex, hwVmax);
+    if (ret == 0) {
+        return 20;
+    }
+
+    // 3. Fallback to short sysfs on-pulse
+    if (sysfsOn(15) == 0) {
+        return 15;
+    }
+#endif
+
+    return -1;
+}
 
 Vibrator::Vibrator() {
     uint32_t deviceType = 0;
@@ -116,13 +199,13 @@ Vibrator::Vibrator() {
 #ifdef USES_OPLUS_AWINIC
     mUseSysfsOnOff = hasSysfsOnOffSupport();
     if (mUseSysfsOnOff) {
-        ALOGI("Using sysfs backend for on/off");
+        ALOGI("Using sysfs backend for on/off and hardware waveforms");
     }
 #endif
 
     int32_t ret = aac_vibra_init(&deviceType);
     if (ret) {
-        ALOGE("AAC init failed: %d\n", ret);
+        ALOGE("AAC init failed: %d (hardware sysfs fallback will be active)\n", ret);
         return;
     }
 
@@ -149,7 +232,7 @@ ndk::ScopedAStatus Vibrator::off() {
     if (mUseSysfsOnOff) {
         int ret = sysfsOff();
         if (ret) {
-            ALOGE("Sysfs off failed: %d\n", ret);
+            ALOGW("Sysfs off failed: %d\n", ret);
         }
 
         int32_t aacRet = aac_vibra_off();
@@ -164,8 +247,7 @@ ndk::ScopedAStatus Vibrator::off() {
 
     int32_t ret = aac_vibra_off();
     if (ret) {
-        ALOGE("AAC off failed: %d\n", ret);
-        return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
+        ALOGW("AAC off failed: %d\n", ret);
     }
 
     mCurrentAmplitude = 1.0f;
@@ -180,13 +262,14 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
 
     mActiveCompositionId++;
 
-    // Short tactile feedback pulses (e.g. keyboard taps, slider ticks, UI touches)
-    // are translated to crisp RichTap tactile prebaked waveforms instead of continuous buzzes.
+    // Short tactile feedback pulses (keyboard taps, slider ticks, UI touches)
+    // are translated to crisp tactile transients instead of continuous buzzing.
     if (timeoutMs <= 15) {
-        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (55 - 35) + 35);
+        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (60 - 35) + 35);
         strength = std::clamp(strength, 1, 99);
-        int32_t ret = aac_vibra_looper_prebaked_effect(static_cast<uint32_t>(Effect::TICK), strength);
-        int32_t playMs = (ret > 0) ? ret : timeoutMs;
+        int hwVmax = static_cast<int>(mCurrentAmplitude * 600 + 600);
+        int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_LIGHT_TICK, strength, 2, hwVmax);
+        int32_t playMs = (dur > 0) ? dur : timeoutMs;
         if (callback != nullptr) {
             std::thread([=] {
                 usleep(playMs * 1000);
@@ -197,10 +280,11 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
     }
 
     if (timeoutMs <= 35) {
-        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (RICHTAP_STRONG_STRENGTH - 50) + 50);
+        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (99 - 55) + 55);
         strength = std::clamp(strength, 1, 99);
-        int32_t ret = aac_vibra_looper_prebaked_effect(static_cast<uint32_t>(Effect::CLICK), strength);
-        int32_t playMs = (ret > 0) ? ret : timeoutMs;
+        int hwVmax = static_cast<int>(mCurrentAmplitude * 1000 + 1500);
+        int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_CLICK, strength, 1, hwVmax);
+        int32_t playMs = (dur > 0) ? dur : timeoutMs;
         if (callback != nullptr) {
             std::thread([=] {
                 usleep(playMs * 1000);
@@ -210,24 +294,36 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         return ndk::ScopedAStatus::ok();
     }
 
-#ifdef USES_OPLUS_AWINIC
-    // For sustained long vibrations (>500ms, like incoming phone calls or alarms),
-    // use the sysfs backend if available to ensure vibrations never cut off.
-    if (mUseSysfsOnOff && timeoutMs > 500) {
-        int ret = sysfsOn(timeoutMs);
-        if (ret) {
-            ALOGE("Sysfs on failed: %d\n", ret);
-            return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
-        }
-
+    if (timeoutMs <= 50) {
+        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (99 - 60) + 60);
+        strength = std::clamp(strength, 1, 99);
+        int hwVmax = static_cast<int>(mCurrentAmplitude * 1000 + 1500);
+        int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_POP, strength, 3, hwVmax);
+        int32_t playMs = (dur > 0) ? dur : timeoutMs;
         if (callback != nullptr) {
             std::thread([=] {
-                usleep(timeoutMs * 1000);
+                usleep(playMs * 1000);
                 callback->onComplete();
             }).detach();
         }
-
         return ndk::ScopedAStatus::ok();
+    }
+
+    // For sustained long vibrations (>50ms, like incoming phone calls or alarms),
+    // use the sysfs backend if available to ensure vibrations never cut off.
+#ifdef USES_OPLUS_AWINIC
+    if (mUseSysfsOnOff) {
+        int ret = sysfsOn(timeoutMs);
+        if (ret == 0) {
+            if (callback != nullptr) {
+                std::thread([=] {
+                    usleep(timeoutMs * 1000);
+                    callback->onComplete();
+                }).detach();
+            }
+            return ndk::ScopedAStatus::ok();
+        }
+        ALOGW("sysfsOn failed: %d, falling back to aac_vibra_looper_on", ret);
     }
 #endif
 
@@ -247,7 +343,7 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
             }
         }
 #endif
-        ALOGE("AAC on failed: %d\n", ret);
+        ALOGE("Both aac_vibra_looper_on and sysfsOn failed: %d\n", ret);
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
     }
 
@@ -264,82 +360,161 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
 ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
                                      const std::shared_ptr<IVibratorCallback>& callback,
                                      int32_t* _aidl_return) {
-    int32_t strength;
-    uint32_t targetEffect;
-
 #ifdef OVERRIDE_EFFECTS
     effect = overrideVibratorEffect(effect);
 #endif
 
     mActiveCompositionId++;
 
-    if (effect == Effect::TEXTURE_TICK) {
-        targetEffect = static_cast<uint32_t>(Effect::TICK);
-        switch (es) {
-            case EffectStrength::LIGHT:
-                strength = 40;
-                break;
-            case EffectStrength::MEDIUM:
-                strength = 50;
-                break;
-            case EffectStrength::STRONG:
-                strength = 60;
-                break;
-            default:
-                return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
+    uint32_t aacEffectId;
+    int32_t strength;
+    int hwWaveform;
+    int hwVmax;
+
+    switch (effect) {
+        case Effect::TEXTURE_TICK:
+            aacEffectId = RICHTAP_DYNAMIC_TEXTURE_TICK;
+            hwWaveform = 2;
+            switch (es) {
+                case EffectStrength::LIGHT:
+                    strength = 40;
+                    hwVmax = 800;
+                    break;
+                case EffectStrength::MEDIUM:
+                    strength = 55;
+                    hwVmax = 1000;
+                    break;
+                case EffectStrength::STRONG:
+                default:
+                    strength = 70;
+                    hwVmax = 1200;
+                    break;
+            }
+            break;
+
+        case Effect::TICK:
+            aacEffectId = RICHTAP_DYNAMIC_TICK;
+            hwWaveform = 1;
+            switch (es) {
+                case EffectStrength::LIGHT:
+                    strength = 50;
+                    hwVmax = 1200;
+                    break;
+                case EffectStrength::MEDIUM:
+                    strength = 65;
+                    hwVmax = 1500;
+                    break;
+                case EffectStrength::STRONG:
+                default:
+                    strength = 80;
+                    hwVmax = 1800;
+                    break;
+            }
+            break;
+
+        case Effect::CLICK:
+            aacEffectId = RICHTAP_DYNAMIC_CLICK;
+            hwWaveform = 1;
+            switch (es) {
+                case EffectStrength::LIGHT:
+                    strength = RICHTAP_LIGHT_STRENGTH;
+                    hwVmax = 1800;
+                    break;
+                case EffectStrength::MEDIUM:
+                    strength = RICHTAP_MEDIUM_STRENGTH;
+                    hwVmax = 2200;
+                    break;
+                case EffectStrength::STRONG:
+                default:
+                    strength = RICHTAP_STRONG_STRENGTH;
+                    hwVmax = 2500;
+                    break;
+            }
+            break;
+
+        case Effect::DOUBLE_CLICK: {
+            playTactileEffect(RICHTAP_DYNAMIC_CLICK, 99, 1, 2500);
+            std::thread([=] {
+                usleep(100 * 1000);
+                playTactileEffect(RICHTAP_DYNAMIC_CLICK, 99, 1, 2500);
+                if (callback != nullptr) {
+                    usleep(30 * 1000);
+                    callback->onComplete();
+                }
+            }).detach();
+            if (_aidl_return != nullptr) {
+                *_aidl_return = 130;
+            }
+            return ndk::ScopedAStatus::ok();
         }
-    } else if (effect == Effect::TICK) {
-        targetEffect = static_cast<uint32_t>(Effect::TICK);
-        switch (es) {
-            case EffectStrength::LIGHT:
-                strength = 50;
-                break;
-            case EffectStrength::MEDIUM:
-                strength = 65;
-                break;
-            case EffectStrength::STRONG:
-                strength = 80;
-                break;
-            default:
-                return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
-        }
-    } else if (effect == Effect::POP) {
-        targetEffect = static_cast<uint32_t>(Effect::POP);
-        switch (es) {
-            case EffectStrength::LIGHT:
-                strength = 60;
-                break;
-            case EffectStrength::MEDIUM:
-                strength = 75;
-                break;
-            case EffectStrength::STRONG:
-                strength = 90;
-                break;
-            default:
-                return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
-        }
-    } else if (effect >= Effect::CLICK && effect <= Effect::HEAVY_CLICK) {
-        targetEffect = static_cast<uint32_t>(effect);
-        switch (es) {
-            case EffectStrength::LIGHT:
-                strength = RICHTAP_LIGHT_STRENGTH;
-                break;
-            case EffectStrength::MEDIUM:
-                strength = RICHTAP_MEDIUM_STRENGTH;
-                break;
-            case EffectStrength::STRONG:
-                strength = RICHTAP_STRONG_STRENGTH;
-                break;
-            default:
-                return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
-        }
-    } else {
-        return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
+
+        case Effect::POP:
+            aacEffectId = RICHTAP_DYNAMIC_POP;
+            hwWaveform = 3;
+            switch (es) {
+                case EffectStrength::LIGHT:
+                    strength = 60;
+                    hwVmax = 1800;
+                    break;
+                case EffectStrength::MEDIUM:
+                    strength = 75;
+                    hwVmax = 2100;
+                    break;
+                case EffectStrength::STRONG:
+                default:
+                    strength = 90;
+                    hwVmax = 2400;
+                    break;
+            }
+            break;
+
+        case Effect::THUD:
+            aacEffectId = RICHTAP_DYNAMIC_POP;
+            hwWaveform = 3;
+            switch (es) {
+                case EffectStrength::LIGHT:
+                    strength = 65;
+                    hwVmax = 1900;
+                    break;
+                case EffectStrength::MEDIUM:
+                    strength = 80;
+                    hwVmax = 2200;
+                    break;
+                case EffectStrength::STRONG:
+                default:
+                    strength = 95;
+                    hwVmax = 2500;
+                    break;
+            }
+            break;
+
+        case Effect::HEAVY_CLICK:
+            aacEffectId = RICHTAP_DYNAMIC_HEAVY_CLICK;
+            hwWaveform = 4;
+            switch (es) {
+                case EffectStrength::LIGHT:
+                    strength = 75;
+                    hwVmax = 2000;
+                    break;
+                case EffectStrength::MEDIUM:
+                    strength = 89;
+                    hwVmax = 2300;
+                    break;
+                case EffectStrength::STRONG:
+                default:
+                    strength = 99;
+                    hwVmax = 2500;
+                    break;
+            }
+            break;
+
+        default:
+            return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
     }
 
-    int32_t ret = aac_vibra_looper_prebaked_effect(targetEffect, strength);
-    if (ret < 0) {
-        ALOGE("AAC perform failed: %d\n", ret);
+    int32_t ret = playTactileEffect(aacEffectId, strength, hwWaveform, hwVmax);
+    if (ret <= 0) {
+        ALOGE("playTactileEffect failed: %d\n", ret);
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
     }
 
@@ -434,25 +609,25 @@ ndk::ScopedAStatus Vibrator::getPrimitiveDuration(CompositePrimitive primitive,
             *durationMs = 0;
             break;
         case CompositePrimitive::CLICK:
-            *durationMs = 15;
+            *durationMs = 20;
             break;
         case CompositePrimitive::THUD:
             *durationMs = 25;
             break;
         case CompositePrimitive::SPIN:
-            *durationMs = 15;
+            *durationMs = 20;
             break;
         case CompositePrimitive::QUICK_RISE:
-            *durationMs = 15;
+            *durationMs = 20;
             break;
         case CompositePrimitive::SLOW_RISE:
             *durationMs = 25;
             break;
         case CompositePrimitive::QUICK_FALL:
-            *durationMs = 15;
+            *durationMs = 12;
             break;
         case CompositePrimitive::LIGHT_TICK:
-            *durationMs = 8;
+            *durationMs = 5;
             break;
         case CompositePrimitive::LOW_TICK:
             *durationMs = 10;
@@ -503,49 +678,67 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
                 continue;
             }
 
-            uint32_t effectId;
+            uint32_t aacId;
             int32_t strength;
+            int hwIndex;
+            int hwVmax;
 
             switch (e.primitive) {
                 case CompositePrimitive::CLICK:
-                    effectId = static_cast<uint32_t>(Effect::CLICK);
-                    strength = static_cast<int32_t>(e.scale * (RICHTAP_STRONG_STRENGTH - 50) + 50);
+                    aacId = RICHTAP_DYNAMIC_CLICK;
+                    strength = static_cast<int32_t>(e.scale * (99 - 50) + 50);
+                    hwIndex = 1;
+                    hwVmax = static_cast<int>(e.scale * 1200 + 1300);
                     break;
                 case CompositePrimitive::THUD:
-                    effectId = static_cast<uint32_t>(Effect::THUD);
-                    strength = static_cast<int32_t>(e.scale * (RICHTAP_STRONG_STRENGTH - 50) + 50);
+                    aacId = RICHTAP_DYNAMIC_POP;
+                    strength = static_cast<int32_t>(e.scale * (99 - 50) + 50);
+                    hwIndex = 3;
+                    hwVmax = static_cast<int>(e.scale * 1200 + 1300);
                     break;
                 case CompositePrimitive::SPIN:
-                    effectId = static_cast<uint32_t>(Effect::POP);
-                    strength = static_cast<int32_t>(e.scale * (RICHTAP_STRONG_STRENGTH - 45) + 45);
+                    aacId = RICHTAP_DYNAMIC_POP;
+                    strength = static_cast<int32_t>(e.scale * (95 - 45) + 45);
+                    hwIndex = 3;
+                    hwVmax = static_cast<int>(e.scale * 1000 + 1200);
                     break;
                 case CompositePrimitive::QUICK_RISE:
-                    effectId = static_cast<uint32_t>(Effect::POP);
-                    strength = static_cast<int32_t>(e.scale * (RICHTAP_STRONG_STRENGTH - 45) + 45);
+                    aacId = RICHTAP_DYNAMIC_CLICK;
+                    strength = static_cast<int32_t>(e.scale * (90 - 45) + 45);
+                    hwIndex = 1;
+                    hwVmax = static_cast<int>(e.scale * 1000 + 1200);
                     break;
                 case CompositePrimitive::SLOW_RISE:
-                    effectId = static_cast<uint32_t>(Effect::THUD);
-                    strength = static_cast<int32_t>(e.scale * (RICHTAP_STRONG_STRENGTH - 45) + 45);
+                    aacId = RICHTAP_DYNAMIC_POP;
+                    strength = static_cast<int32_t>(e.scale * (90 - 45) + 45);
+                    hwIndex = 3;
+                    hwVmax = static_cast<int>(e.scale * 1000 + 1200);
                     break;
                 case CompositePrimitive::QUICK_FALL:
-                    effectId = static_cast<uint32_t>(Effect::POP);
-                    strength = static_cast<int32_t>(e.scale * (RICHTAP_STRONG_STRENGTH - 45) + 45);
+                    aacId = RICHTAP_DYNAMIC_TICK;
+                    strength = static_cast<int32_t>(e.scale * (80 - 40) + 40);
+                    hwIndex = 1;
+                    hwVmax = static_cast<int>(e.scale * 800 + 1000);
                     break;
                 case CompositePrimitive::LIGHT_TICK:
-                    effectId = static_cast<uint32_t>(Effect::TICK);
-                    strength = static_cast<int32_t>(e.scale * (55 - 35) + 35);
+                    aacId = RICHTAP_DYNAMIC_TEXTURE_TICK;
+                    strength = static_cast<int32_t>(e.scale * (60 - 30) + 30);
+                    hwIndex = 2;
+                    hwVmax = static_cast<int>(e.scale * 600 + 600);
                     break;
                 case CompositePrimitive::LOW_TICK:
-                    effectId = static_cast<uint32_t>(Effect::TICK);
-                    strength = static_cast<int32_t>(e.scale * (65 - 40) + 40);
+                    aacId = RICHTAP_DYNAMIC_TICK;
+                    strength = static_cast<int32_t>(e.scale * (70 - 40) + 40);
+                    hwIndex = 1;
+                    hwVmax = static_cast<int>(e.scale * 800 + 800);
                     break;
                 default:
                     continue;
             }
 
             strength = std::clamp(strength, 1, 99);
-            int32_t dur = aac_vibra_looper_prebaked_effect(effectId, strength);
-            int32_t waitMs = (dur > 0) ? dur : 10;
+            int32_t dur = playTactileEffect(aacId, strength, hwIndex, hwVmax);
+            int32_t waitMs = (dur > 0) ? dur : 12;
             usleep(waitMs * 1000);
         }
 
