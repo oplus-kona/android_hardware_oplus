@@ -155,17 +155,26 @@ static int sysfsOff() {
 }
 
 static int sysfsWaveform(int waveformIndex, int vmax) {
+    int ret;
+
     if (access(RICHTAP_BRIGHTNESS_NODE, F_OK) != 0 ||
         access(RICHTAP_WAVEFORM_INDEX_NODE, F_OK) != 0) {
         return -ENOENT;
     }
 
     if (access(RICHTAP_VMAX_NODE, F_OK) == 0 && vmax > 0) {
-        writeNode(RICHTAP_VMAX_NODE, vmax);
+        ret = writeNode(RICHTAP_VMAX_NODE, vmax);
+        if (ret != 0) {
+            return ret;
+        }
     }
 
-    writeNode(RICHTAP_WAVEFORM_INDEX_NODE, waveformIndex);
-    return writeNode(RICHTAP_BRIGHTNESS_NODE, "1");
+    ret = writeNode(RICHTAP_WAVEFORM_INDEX_NODE, waveformIndex);
+    if (ret != 0) {
+        return ret;
+    }
+
+    return writeNode(RICHTAP_BRIGHTNESS_NODE, 255);
 }
 #endif
 
@@ -220,7 +229,8 @@ ndk::ScopedAStatus Vibrator::getCapabilities(int32_t* _aidl_return) {
     }
 
     *_aidl_return = IVibrator::CAP_ON_CALLBACK | IVibrator::CAP_PERFORM_CALLBACK |
-                    IVibrator::CAP_AMPLITUDE_CONTROL | IVibrator::CAP_COMPOSE_EFFECTS;
+                    IVibrator::CAP_AMPLITUDE_CONTROL | IVibrator::CAP_COMPOSE_EFFECTS |
+                    IVibrator::CAP_GET_RESONANT_FREQUENCY;
 
     return ndk::ScopedAStatus::ok();
 }
@@ -261,6 +271,7 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
     }
 
     mActiveCompositionId++;
+    uint64_t myId = mActiveCompositionId;
 
     // Short tactile feedback pulses (keyboard taps, slider ticks, UI touches)
     // are translated to crisp tactile transients instead of continuous buzzing.
@@ -271,9 +282,11 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_LIGHT_TICK, strength, 2, hwVmax);
         int32_t playMs = (dur > 0) ? dur : timeoutMs;
         if (callback != nullptr) {
-            std::thread([=] {
+            std::thread([this, callback, playMs, myId] {
                 usleep(playMs * 1000);
-                callback->onComplete();
+                if (mActiveCompositionId == myId) {
+                    callback->onComplete();
+                }
             }).detach();
         }
         return ndk::ScopedAStatus::ok();
@@ -286,9 +299,11 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_CLICK, strength, 1, hwVmax);
         int32_t playMs = (dur > 0) ? dur : timeoutMs;
         if (callback != nullptr) {
-            std::thread([=] {
+            std::thread([this, callback, playMs, myId] {
                 usleep(playMs * 1000);
-                callback->onComplete();
+                if (mActiveCompositionId == myId) {
+                    callback->onComplete();
+                }
             }).detach();
         }
         return ndk::ScopedAStatus::ok();
@@ -301,24 +316,62 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_POP, strength, 3, hwVmax);
         int32_t playMs = (dur > 0) ? dur : timeoutMs;
         if (callback != nullptr) {
-            std::thread([=] {
+            std::thread([this, callback, playMs, myId] {
                 usleep(playMs * 1000);
-                callback->onComplete();
+                if (mActiveCompositionId == myId) {
+                    callback->onComplete();
+                }
             }).detach();
         }
         return ndk::ScopedAStatus::ok();
     }
 
-    // For sustained long vibrations (>50ms, like incoming phone calls or alarms),
+    if (timeoutMs <= 120) {
+        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (99 - 65) + 65);
+        strength = std::clamp(strength, 1, 99);
+        int hwVmax = static_cast<int>(mCurrentAmplitude * 1000 + 2000);
+        int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_HEAVY_CLICK, strength, 4, hwVmax);
+        int32_t playMs = (dur > 0) ? dur : timeoutMs;
+        if (callback != nullptr) {
+            std::thread([this, callback, playMs, myId] {
+                usleep(playMs * 1000);
+                if (mActiveCompositionId == myId) {
+                    callback->onComplete();
+                }
+            }).detach();
+        }
+        return ndk::ScopedAStatus::ok();
+    }
+
+    if (timeoutMs <= 250) {
+        playTactileEffect(RICHTAP_DYNAMIC_POP, 85, 3, 2200);
+        std::thread([this, callback, myId] {
+            usleep(45 * 1000);
+            if (mActiveCompositionId == myId) {
+                playTactileEffect(RICHTAP_DYNAMIC_HEAVY_CLICK, 95, 4, 2500);
+            }
+            if (callback != nullptr) {
+                usleep(30 * 1000);
+                if (mActiveCompositionId == myId) {
+                    callback->onComplete();
+                }
+            }
+        }).detach();
+        return ndk::ScopedAStatus::ok();
+    }
+
+    // For sustained long vibrations (>250ms, like incoming phone calls or alarms),
     // use the sysfs backend if available to ensure vibrations never cut off.
 #ifdef USES_OPLUS_AWINIC
     if (mUseSysfsOnOff) {
         int ret = sysfsOn(timeoutMs);
         if (ret == 0) {
             if (callback != nullptr) {
-                std::thread([=] {
+                std::thread([this, callback, timeoutMs, myId] {
                     usleep(timeoutMs * 1000);
-                    callback->onComplete();
+                    if (mActiveCompositionId == myId) {
+                        callback->onComplete();
+                    }
                 }).detach();
             }
             return ndk::ScopedAStatus::ok();
@@ -334,9 +387,11 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
             int sysRet = sysfsOn(timeoutMs);
             if (!sysRet) {
                 if (callback != nullptr) {
-                    std::thread([=] {
+                    std::thread([this, callback, timeoutMs, myId] {
                         usleep(timeoutMs * 1000);
-                        callback->onComplete();
+                        if (mActiveCompositionId == myId) {
+                            callback->onComplete();
+                        }
                     }).detach();
                 }
                 return ndk::ScopedAStatus::ok();
@@ -348,9 +403,11 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
     }
 
     if (callback != nullptr) {
-        std::thread([=] {
+        std::thread([this, callback, ret, myId] {
             usleep(ret * 1000);
-            callback->onComplete();
+            if (mActiveCompositionId == myId) {
+                callback->onComplete();
+            }
         }).detach();
     }
 
@@ -365,6 +422,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
 #endif
 
     mActiveCompositionId++;
+    uint64_t myId = mActiveCompositionId;
 
     uint32_t aacEffectId;
     int32_t strength;
@@ -433,13 +491,19 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
             break;
 
         case Effect::DOUBLE_CLICK: {
+            uint64_t myId = mActiveCompositionId;
             playTactileEffect(RICHTAP_DYNAMIC_CLICK, 99, 1, 2500);
-            std::thread([=] {
+            std::thread([this, callback, myId] {
                 usleep(100 * 1000);
+                if (mActiveCompositionId != myId) {
+                    return;
+                }
                 playTactileEffect(RICHTAP_DYNAMIC_CLICK, 99, 1, 2500);
                 if (callback != nullptr) {
                     usleep(30 * 1000);
-                    callback->onComplete();
+                    if (mActiveCompositionId == myId) {
+                        callback->onComplete();
+                    }
                 }
             }).detach();
             if (_aidl_return != nullptr) {
@@ -469,7 +533,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
             break;
 
         case Effect::THUD:
-            aacEffectId = RICHTAP_DYNAMIC_POP;
+            aacEffectId = RICHTAP_PREBAKED_THUD;
             hwWaveform = 3;
             switch (es) {
                 case EffectStrength::LIGHT:
@@ -519,9 +583,11 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
     }
 
     if (callback != nullptr) {
-        std::thread([=] {
+        std::thread([this, callback, ret, myId] {
             usleep(ret * 1000);
-            callback->onComplete();
+            if (mActiveCompositionId == myId) {
+                callback->onComplete();
+            }
         }).detach();
     }
 
@@ -663,15 +729,15 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
 
     std::thread([this, composite, callback, myId]() {
         for (const auto& e : composite) {
-            if (mActiveCompositionId != myId) {
-                return;
+            if (e.delayMs > 0) {
+                if (mActiveCompositionId != myId) {
+                    break;
+                }
+                usleep(e.delayMs * 1000);
             }
 
-            if (e.delayMs > 0) {
-                usleep(e.delayMs * 1000);
-                if (mActiveCompositionId != myId) {
-                    return;
-                }
+            if (mActiveCompositionId != myId) {
+                break;
             }
 
             if (e.primitive == CompositePrimitive::NOOP) {
@@ -691,7 +757,7 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
                     hwVmax = static_cast<int>(e.scale * 1200 + 1300);
                     break;
                 case CompositePrimitive::THUD:
-                    aacId = RICHTAP_DYNAMIC_POP;
+                    aacId = RICHTAP_PREBAKED_THUD;
                     strength = static_cast<int32_t>(e.scale * (99 - 50) + 50);
                     hwIndex = 3;
                     hwVmax = static_cast<int>(e.scale * 1200 + 1300);
@@ -764,11 +830,18 @@ ndk::ScopedAStatus Vibrator::alwaysOnDisable(int32_t id __unused) {
     return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
 }
 
-ndk::ScopedAStatus Vibrator::getResonantFrequency(float* resonantFreqHz __unused) {
-    return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
+ndk::ScopedAStatus Vibrator::getResonantFrequency(float* resonantFreqHz) {
+    if (!resonantFreqHz) {
+        return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
+    }
+    *resonantFreqHz = 170.0f;
+    return ndk::ScopedAStatus::ok();
 }
 
-ndk::ScopedAStatus Vibrator::getQFactor(float* qFactor __unused) {
+ndk::ScopedAStatus Vibrator::getQFactor(float* qFactor) {
+    if (!qFactor) {
+        return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
+    }
     return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
 }
 

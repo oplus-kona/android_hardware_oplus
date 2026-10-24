@@ -1,4 +1,5 @@
 on boot
+    wait /dev/awinic_haptic
     chown system system /sys/class/leds/vibrator/oplus_activate
     chown system system /sys/class/leds/vibrator/oplus_duration
     chown system system /sys/class/leds/vibrator/oplus_state
