@@ -1,3 +1,4 @@
+allow vendor_init aac_richtap_device:chr_file { rw_file_perms setattr };
 allow vendor_init proc_sched:file w_file_perms;
 allow vendor_init vendor_proc_display:file w_file_perms;
 
