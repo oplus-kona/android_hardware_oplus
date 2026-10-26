@@ -52,9 +52,6 @@ ParamService                        u:object_r:oem_service:s0
 # OSENSE
 vendor.oplus.hardware.osense.client.IOsenseAidlHalReporter/default    u:object_r:hal_oplus_osense_aidl_service:s0
 
-# Param Service
-ParamService                                u:object_r:oem_service:s0
-
 # Performance
 vendor.oplus.hardware.performance.IPerformance/default    u:object_r:hal_oplus_performance_aidl_service:s0
 
