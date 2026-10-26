@@ -1,9 +1,15 @@
+typeattribute hal_power_default mlstrustedsubject;
+
 allow hal_power_default vendor_latency_device:chr_file rw_file_perms;
 
 hal_client_domain(hal_power_default, vendor_hal_oplus_charger)
 
-# libperfmgr applies uclamp/scheduler hints via sched_setattr(), which requires CAP_SYS_NICE
+# ADPF hint sessions set scheduling on client threads, which requires CAP_SYS_NICE
 allow hal_power_default self:capability sys_nice;
+allow hal_power_default appdomain:process { getsched setsched };
+allow hal_power_default surfaceflinger:process setsched;
+allow hal_power_default hal_graphics_composer_default:process setsched;
+allow hal_power_default system_server:process setsched;
 
 hal_client_domain(hal_power_default, vendor_hal_oplus_touch)
 
