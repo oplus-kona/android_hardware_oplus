@@ -28,9 +28,16 @@
 #include "VibratorEffectsOverride.h"
 #endif
 
-#define RICHTAP_LIGHT_STRENGTH 69
-#define RICHTAP_MEDIUM_STRENGTH 89
-#define RICHTAP_STRONG_STRENGTH 99
+// The blob maps strength to amplitude as strength/100 of full scale: below 70 it
+// plays the level-0 table with gain = strength * 0.02, 70-89 the level-1 table
+// with gain = strength * 0.0125, and 90-100 the level-2 table with gain =
+// strength * 0.01. The three tables are pre-scaled to peaks of 0.50, 0.80 and
+// 1.00 of full scale, so gain is exactly 1.0 at 50/80/100. Those are the
+// nominal light/medium/strong amplitudes, matching the sibling qti HAL
+// (0x3fff/0x5fff/0x7fff of full scale).
+#define RICHTAP_LIGHT_STRENGTH 50
+#define RICHTAP_MEDIUM_STRENGTH 80
+#define RICHTAP_STRONG_STRENGTH 100
 
 // aac_richtap.config only defines three prebaked effects (0x1000..0x1002) and
 // the eleven JND transients 0x3001..0x300b. The durations below are the
@@ -179,8 +186,9 @@ static int sysfsWaveform(int waveformIndex, int vmax) {
 }
 #endif
 
-// AAC selects level 0/1/2 from the strength value; these are the highest
-// strength of each level, so EffectStrength maps 1:1 onto the config levels.
+// AOSP replaces the requested prebaked strength with the user intensity bucket
+// (LOW/MEDIUM/HIGH -> LIGHT/MEDIUM/STRONG), so these are the nominal amplitude
+// levels rather than the top of each blob band.
 static int32_t strengthForEffectStrength(EffectStrength strength) {
     switch (strength) {
         case EffectStrength::LIGHT:
@@ -634,7 +642,7 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
 
             PrimitivePlayback playback = primitivePlayback(e.primitive);
             int32_t strength =
-                    std::clamp(static_cast<int32_t>(e.scale * 99.0f + 0.5f), 1, 99);
+                    std::clamp(static_cast<int32_t>(e.scale * 100.0f + 0.5f), 1, 100);
             int32_t dur = playTactileEffect(playback.aacId, strength, playback.hwWaveform,
                                             playback.hwVmax);
             if (dur <= 0) {
