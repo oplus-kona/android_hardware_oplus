@@ -8,12 +8,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cutils/properties.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <log/log.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #ifdef USES_OPLUS_AWINIC
 #include <errno.h>
-#include <fcntl.h>
 #include <string.h>
 
 #include <string>
@@ -30,21 +32,20 @@
 #define RICHTAP_MEDIUM_STRENGTH 89
 #define RICHTAP_STRONG_STRENGTH 99
 
-// RichTap Prebaked Effect IDs (0x1000 + index)
-[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_CLICK        = 0x1000;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_DOUBLE_CLICK = 0x1001;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_TICK         = 0x1002;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_THUD         = 0x1003;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_POP          = 0x1004;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_PREBAKED_HEAVY_CLICK  = 0x1005;
+// aac_richtap.config only defines three prebaked effects (0x1000..0x1002) and
+// the eleven JND transients 0x3001..0x300b. The durations below are the
+// strong-level values; the light/medium levels are 1-3 ms shorter.
+static constexpr uint32_t RICHTAP_PREBAKED_DOUBLE_CLICK = 0x1001; // 85 ms
+static constexpr uint32_t RICHTAP_JND_THUD               = 0x3001; // 36 ms
+static constexpr uint32_t RICHTAP_JND_HEAVY_CLICK        = 0x3002; // 30 ms
+static constexpr uint32_t RICHTAP_JND_POP                = 0x3004; // 24 ms
+static constexpr uint32_t RICHTAP_JND_CLICK              = 0x3009; // 12 ms
+static constexpr uint32_t RICHTAP_JND_TICK               = 0x300a; // 12 ms
+static constexpr uint32_t RICHTAP_JND_LIGHT_TICK         = 0x300b; // 11 ms
 
-// RichTap Dynamic Duration Transient IDs (0x3001..0x300b)
-[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_TEXTURE_TICK  = 0x3001;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_LIGHT_TICK    = 0x3001;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_TICK          = 0x3002;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_CLICK         = 0x3003;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_POP           = 0x3004;
-[[maybe_unused]] static constexpr uint32_t RICHTAP_DYNAMIC_HEAVY_CLICK   = 0x3006;
+#define RICHTAP_HAPTIC_DEVICE_NODE "/dev/awinic_haptic"
+static constexpr unsigned long RICHTAP_IOCTL_GET_F0 = 0x5211;
+static constexpr float RICHTAP_DEFAULT_F0_HZ = 170.0f;
 
 #ifdef USES_OPLUS_AWINIC
 #define RICHTAP_OPLUS_ACTIVATE_NODE   "/sys/class/leds/vibrator/oplus_activate"
@@ -178,6 +179,74 @@ static int sysfsWaveform(int waveformIndex, int vmax) {
 }
 #endif
 
+// AAC selects level 0/1/2 from the strength value; these are the highest
+// strength of each level, so EffectStrength maps 1:1 onto the config levels.
+static int32_t strengthForEffectStrength(EffectStrength strength) {
+    switch (strength) {
+        case EffectStrength::LIGHT:
+            return RICHTAP_LIGHT_STRENGTH;
+        case EffectStrength::MEDIUM:
+            return RICHTAP_MEDIUM_STRENGTH;
+        case EffectStrength::STRONG:
+        default:
+            return RICHTAP_STRONG_STRENGTH;
+    }
+}
+
+static int32_t primitiveDurationMs(CompositePrimitive primitive) {
+    switch (primitive) {
+        case CompositePrimitive::NOOP:
+            return 0;
+        case CompositePrimitive::CLICK:
+            return 12;
+        case CompositePrimitive::THUD:
+            return 36;
+        case CompositePrimitive::SPIN:
+            return 24;
+        case CompositePrimitive::QUICK_RISE:
+            return 12;
+        case CompositePrimitive::SLOW_RISE:
+            return 30;
+        case CompositePrimitive::QUICK_FALL:
+            return 12;
+        case CompositePrimitive::LIGHT_TICK:
+            return 11;
+        case CompositePrimitive::LOW_TICK:
+            return 12;
+        default:
+            return -1;
+    }
+}
+
+struct PrimitivePlayback {
+    uint32_t aacId;
+    int hwWaveform;
+    int hwVmax;
+};
+
+static PrimitivePlayback primitivePlayback(CompositePrimitive primitive) {
+    switch (primitive) {
+        case CompositePrimitive::CLICK:
+            return {RICHTAP_JND_CLICK, 1, 2200};
+        case CompositePrimitive::THUD:
+            return {RICHTAP_JND_THUD, 3, 2400};
+        case CompositePrimitive::SPIN:
+            return {RICHTAP_JND_POP, 3, 2100};
+        case CompositePrimitive::QUICK_RISE:
+            return {RICHTAP_JND_CLICK, 1, 1800};
+        case CompositePrimitive::SLOW_RISE:
+            return {RICHTAP_JND_HEAVY_CLICK, 3, 2100};
+        case CompositePrimitive::QUICK_FALL:
+            return {RICHTAP_JND_TICK, 1, 1500};
+        case CompositePrimitive::LIGHT_TICK:
+            return {RICHTAP_JND_LIGHT_TICK, 2, 1200};
+        case CompositePrimitive::LOW_TICK:
+            return {RICHTAP_JND_TICK, 1, 1500};
+        default:
+            return {0, 0, 0};
+    }
+}
+
 static int32_t playTactileEffect(uint32_t aacEffectId, int32_t strength,
                                  int hwWaveformIndex __unused, int hwVmax __unused) {
     // 1. Attempt RichTap AAC looper playback
@@ -219,6 +288,7 @@ Vibrator::Vibrator() {
     }
 
     aac_vibra_looper_start();
+    mAacReady = true;
 
     ALOGI("AAC init success: %u\n", deviceType);
 }
@@ -235,6 +305,40 @@ ndk::ScopedAStatus Vibrator::getCapabilities(int32_t* _aidl_return) {
     return ndk::ScopedAStatus::ok();
 }
 
+void Vibrator::beginVibration() {
+    std::lock_guard<std::mutex> lock(mAmplitudeMutex);
+    mPeakAmplitude = mCurrentAmplitude;
+    mAmplitudeSetSinceStart = false;
+
+    // Restore the amplitude before starting playback: AOSP calls on() before
+    // setAmplitude(), and the previous vibration may have ended in a ramp-down.
+    if (mAacReady) {
+        aac_vibra_setAmplitude(static_cast<uint8_t>(mCurrentAmplitude * 0xff));
+    }
+}
+
+void Vibrator::endVibration() {
+    std::lock_guard<std::mutex> lock(mAmplitudeMutex);
+    if (!mAmplitudeSetSinceStart) {
+        return;
+    }
+
+    // Only restore the stored value; the gain itself is written when the next
+    // vibration starts, so the tail of a ramp-down is not amplified again.
+    mCurrentAmplitude = mPeakAmplitude;
+    mAmplitudeSetSinceStart = false;
+}
+
+void Vibrator::applyFullAmplitude() {
+    std::lock_guard<std::mutex> lock(mAmplitudeMutex);
+
+    // Effects carry their own strength/scale, so they must not inherit the gain
+    // left behind by a previous amplitude-controlled on() call.
+    if (mAacReady) {
+        aac_vibra_setAmplitude(0xff);
+    }
+}
+
 ndk::ScopedAStatus Vibrator::off() {
     mActiveCompositionId++;
 
@@ -244,23 +348,18 @@ ndk::ScopedAStatus Vibrator::off() {
         if (ret) {
             ALOGW("Sysfs off failed: %d\n", ret);
         }
-
-        int32_t aacRet = aac_vibra_off();
-        if (aacRet) {
-            ALOGW("AAC off failed after sysfs off: %d\n", aacRet);
-        }
-
-        mCurrentAmplitude = 1.0f;
-        return ndk::ScopedAStatus::ok();
     }
 #endif
 
-    int32_t ret = aac_vibra_off();
+    // aac_vibra_off() is a no-op in the blob; aac_vibra_stop() is what issues
+    // the RICHTAP_STOP_MODE ioctl that actually cancels playback.
+    int32_t stopState = -1;
+    int32_t ret = aac_vibra_stop(&stopState);
     if (ret) {
-        ALOGW("AAC off failed: %d\n", ret);
+        ALOGW("AAC stop failed: %d\n", ret);
     }
 
-    mCurrentAmplitude = 1.0f;
+    endVibration();
     return ndk::ScopedAStatus::ok();
 }
 
@@ -270,135 +369,26 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         return ndk::ScopedAStatus::ok();
     }
 
-    mActiveCompositionId++;
-    uint64_t myId = mActiveCompositionId;
+    uint64_t myId = ++mActiveCompositionId;
+    beginVibration();
 
-    // Short tactile feedback pulses (keyboard taps, slider ticks, UI touches)
-    // are translated to crisp tactile transients instead of continuous buzzing.
-    if (timeoutMs <= 15) {
-        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (60 - 35) + 35);
-        strength = std::clamp(strength, 1, 99);
-        int hwVmax = static_cast<int>(mCurrentAmplitude * 600 + 600);
-        int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_LIGHT_TICK, strength, 2, hwVmax);
-        int32_t playMs = (dur > 0) ? dur : timeoutMs;
-        if (callback != nullptr) {
-            std::thread([this, callback, playMs, myId] {
-                usleep(playMs * 1000);
-                if (mActiveCompositionId == myId) {
-                    callback->onComplete();
-                }
-            }).detach();
-        }
-        return ndk::ScopedAStatus::ok();
-    }
-
-    if (timeoutMs <= 35) {
-        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (99 - 55) + 55);
-        strength = std::clamp(strength, 1, 99);
-        int hwVmax = static_cast<int>(mCurrentAmplitude * 1000 + 1500);
-        int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_CLICK, strength, 1, hwVmax);
-        int32_t playMs = (dur > 0) ? dur : timeoutMs;
-        if (callback != nullptr) {
-            std::thread([this, callback, playMs, myId] {
-                usleep(playMs * 1000);
-                if (mActiveCompositionId == myId) {
-                    callback->onComplete();
-                }
-            }).detach();
-        }
-        return ndk::ScopedAStatus::ok();
-    }
-
-    if (timeoutMs <= 50) {
-        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (99 - 60) + 60);
-        strength = std::clamp(strength, 1, 99);
-        int hwVmax = static_cast<int>(mCurrentAmplitude * 1000 + 1500);
-        int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_POP, strength, 3, hwVmax);
-        int32_t playMs = (dur > 0) ? dur : timeoutMs;
-        if (callback != nullptr) {
-            std::thread([this, callback, playMs, myId] {
-                usleep(playMs * 1000);
-                if (mActiveCompositionId == myId) {
-                    callback->onComplete();
-                }
-            }).detach();
-        }
-        return ndk::ScopedAStatus::ok();
-    }
-
-    if (timeoutMs <= 120) {
-        int32_t strength = static_cast<int32_t>(mCurrentAmplitude * (99 - 65) + 65);
-        strength = std::clamp(strength, 1, 99);
-        int hwVmax = static_cast<int>(mCurrentAmplitude * 1000 + 2000);
-        int32_t dur = playTactileEffect(RICHTAP_DYNAMIC_HEAVY_CLICK, strength, 4, hwVmax);
-        int32_t playMs = (dur > 0) ? dur : timeoutMs;
-        if (callback != nullptr) {
-            std::thread([this, callback, playMs, myId] {
-                usleep(playMs * 1000);
-                if (mActiveCompositionId == myId) {
-                    callback->onComplete();
-                }
-            }).detach();
-        }
-        return ndk::ScopedAStatus::ok();
-    }
-
-    if (timeoutMs <= 250) {
-        playTactileEffect(RICHTAP_DYNAMIC_POP, 85, 3, 2200);
-        std::thread([this, callback, myId] {
-            usleep(45 * 1000);
-            if (mActiveCompositionId == myId) {
-                playTactileEffect(RICHTAP_DYNAMIC_HEAVY_CLICK, 95, 4, 2500);
-            }
-            if (callback != nullptr) {
-                usleep(30 * 1000);
-                if (mActiveCompositionId == myId) {
-                    callback->onComplete();
-                }
-            }
-        }).detach();
-        return ndk::ScopedAStatus::ok();
-    }
-
-    // For sustained long vibrations (>250ms, like incoming phone calls or alarms),
-    // use the sysfs backend if available to ensure vibrations never cut off.
-#ifdef USES_OPLUS_AWINIC
-    if (mUseSysfsOnOff) {
-        int ret = sysfsOn(timeoutMs);
-        if (ret == 0) {
-            if (callback != nullptr) {
-                std::thread([this, callback, timeoutMs, myId] {
-                    usleep(timeoutMs * 1000);
-                    if (mActiveCompositionId == myId) {
-                        callback->onComplete();
-                    }
-                }).detach();
-            }
-            return ndk::ScopedAStatus::ok();
-        }
-        ALOGW("sysfsOn failed: %d, falling back to aac_vibra_looper_on", ret);
-    }
-#endif
-
-    int32_t ret = aac_vibra_looper_on(timeoutMs);
-    if (ret < 0) {
+    // The AAC looper already turns short on() requests into crisp transients
+    // (<56 ms) and keeps the full requested duration for longer ones.
+    int32_t ret = aac_vibra_looper_on(static_cast<uint32_t>(timeoutMs));
+    if (ret <= 0) {
 #ifdef USES_OPLUS_AWINIC
         if (mUseSysfsOnOff) {
             int sysRet = sysfsOn(timeoutMs);
-            if (!sysRet) {
-                if (callback != nullptr) {
-                    std::thread([this, callback, timeoutMs, myId] {
-                        usleep(timeoutMs * 1000);
-                        if (mActiveCompositionId == myId) {
-                            callback->onComplete();
-                        }
-                    }).detach();
-                }
-                return ndk::ScopedAStatus::ok();
+            if (sysRet == 0) {
+                ret = timeoutMs;
             }
         }
 #endif
-        ALOGE("Both aac_vibra_looper_on and sysfsOn failed: %d\n", ret);
+    }
+
+    if (ret <= 0) {
+        ALOGE("Failed to start %dms vibration: %d\n", timeoutMs, ret);
+        endVibration();
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
     }
 
@@ -406,6 +396,7 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         std::thread([this, callback, ret, myId] {
             usleep(ret * 1000);
             if (mActiveCompositionId == myId) {
+                endVibration();
                 callback->onComplete();
             }
         }).detach();
@@ -421,162 +412,62 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
     effect = overrideVibratorEffect(effect);
 #endif
 
-    mActiveCompositionId++;
-    uint64_t myId = mActiveCompositionId;
-
     uint32_t aacEffectId;
-    int32_t strength;
     int hwWaveform;
     int hwVmax;
 
     switch (effect) {
         case Effect::TEXTURE_TICK:
-            aacEffectId = RICHTAP_DYNAMIC_TEXTURE_TICK;
+            aacEffectId = RICHTAP_JND_LIGHT_TICK;
             hwWaveform = 2;
-            switch (es) {
-                case EffectStrength::LIGHT:
-                    strength = 40;
-                    hwVmax = 800;
-                    break;
-                case EffectStrength::MEDIUM:
-                    strength = 55;
-                    hwVmax = 1000;
-                    break;
-                case EffectStrength::STRONG:
-                default:
-                    strength = 70;
-                    hwVmax = 1200;
-                    break;
-            }
+            hwVmax = 1200;
             break;
 
         case Effect::TICK:
-            aacEffectId = RICHTAP_DYNAMIC_TICK;
+            aacEffectId = RICHTAP_JND_TICK;
             hwWaveform = 1;
-            switch (es) {
-                case EffectStrength::LIGHT:
-                    strength = 50;
-                    hwVmax = 1200;
-                    break;
-                case EffectStrength::MEDIUM:
-                    strength = 65;
-                    hwVmax = 1500;
-                    break;
-                case EffectStrength::STRONG:
-                default:
-                    strength = 80;
-                    hwVmax = 1800;
-                    break;
-            }
+            hwVmax = 1500;
             break;
 
         case Effect::CLICK:
-            aacEffectId = RICHTAP_DYNAMIC_CLICK;
+            aacEffectId = RICHTAP_JND_CLICK;
             hwWaveform = 1;
-            switch (es) {
-                case EffectStrength::LIGHT:
-                    strength = RICHTAP_LIGHT_STRENGTH;
-                    hwVmax = 1800;
-                    break;
-                case EffectStrength::MEDIUM:
-                    strength = RICHTAP_MEDIUM_STRENGTH;
-                    hwVmax = 2200;
-                    break;
-                case EffectStrength::STRONG:
-                default:
-                    strength = RICHTAP_STRONG_STRENGTH;
-                    hwVmax = 2500;
-                    break;
-            }
+            hwVmax = 2200;
             break;
 
-        case Effect::DOUBLE_CLICK: {
-            uint64_t myId = mActiveCompositionId;
-            playTactileEffect(RICHTAP_DYNAMIC_CLICK, 99, 1, 2500);
-            std::thread([this, callback, myId] {
-                usleep(100 * 1000);
-                if (mActiveCompositionId != myId) {
-                    return;
-                }
-                playTactileEffect(RICHTAP_DYNAMIC_CLICK, 99, 1, 2500);
-                if (callback != nullptr) {
-                    usleep(30 * 1000);
-                    if (mActiveCompositionId == myId) {
-                        callback->onComplete();
-                    }
-                }
-            }).detach();
-            if (_aidl_return != nullptr) {
-                *_aidl_return = 130;
-            }
-            return ndk::ScopedAStatus::ok();
-        }
+        case Effect::DOUBLE_CLICK:
+            aacEffectId = RICHTAP_PREBAKED_DOUBLE_CLICK;
+            hwWaveform = 1;
+            hwVmax = 2200;
+            break;
 
         case Effect::POP:
-            aacEffectId = RICHTAP_DYNAMIC_POP;
+            aacEffectId = RICHTAP_JND_POP;
             hwWaveform = 3;
-            switch (es) {
-                case EffectStrength::LIGHT:
-                    strength = 60;
-                    hwVmax = 1800;
-                    break;
-                case EffectStrength::MEDIUM:
-                    strength = 75;
-                    hwVmax = 2100;
-                    break;
-                case EffectStrength::STRONG:
-                default:
-                    strength = 90;
-                    hwVmax = 2400;
-                    break;
-            }
+            hwVmax = 2100;
             break;
 
         case Effect::THUD:
-            aacEffectId = RICHTAP_PREBAKED_THUD;
+            aacEffectId = RICHTAP_JND_THUD;
             hwWaveform = 3;
-            switch (es) {
-                case EffectStrength::LIGHT:
-                    strength = 65;
-                    hwVmax = 1900;
-                    break;
-                case EffectStrength::MEDIUM:
-                    strength = 80;
-                    hwVmax = 2200;
-                    break;
-                case EffectStrength::STRONG:
-                default:
-                    strength = 95;
-                    hwVmax = 2500;
-                    break;
-            }
+            hwVmax = 2400;
             break;
 
         case Effect::HEAVY_CLICK:
-            aacEffectId = RICHTAP_DYNAMIC_HEAVY_CLICK;
+            aacEffectId = RICHTAP_JND_HEAVY_CLICK;
             hwWaveform = 4;
-            switch (es) {
-                case EffectStrength::LIGHT:
-                    strength = 75;
-                    hwVmax = 2000;
-                    break;
-                case EffectStrength::MEDIUM:
-                    strength = 89;
-                    hwVmax = 2300;
-                    break;
-                case EffectStrength::STRONG:
-                default:
-                    strength = 99;
-                    hwVmax = 2500;
-                    break;
-            }
+            hwVmax = 2500;
             break;
 
         default:
             return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
     }
 
-    int32_t ret = playTactileEffect(aacEffectId, strength, hwWaveform, hwVmax);
+    // Only cancel the running vibration once the request is known to be valid.
+    uint64_t myId = ++mActiveCompositionId;
+    applyFullAmplitude();
+    int32_t ret = playTactileEffect(aacEffectId, strengthForEffectStrength(es), hwWaveform,
+                                    hwVmax);
     if (ret <= 0) {
         ALOGE("playTactileEffect failed: %d\n", ret);
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
@@ -611,14 +502,21 @@ ndk::ScopedAStatus Vibrator::getSupportedEffects(std::vector<Effect>* _aidl_retu
 }
 
 ndk::ScopedAStatus Vibrator::setAmplitude(float amplitude) {
-    if (amplitude <= 0.0f || amplitude > 1.0f) {
+    // Written as a positive test so that NaN is rejected as well.
+    if (!(amplitude > 0.0f && amplitude <= 1.0f)) {
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
     }
 
+    std::lock_guard<std::mutex> lock(mAmplitudeMutex);
     mCurrentAmplitude = amplitude;
-    uint8_t tmp = static_cast<uint8_t>(amplitude * 0xff);
+    if (!mAmplitudeSetSinceStart) {
+        mPeakAmplitude = amplitude;
+        mAmplitudeSetSinceStart = true;
+    } else {
+        mPeakAmplitude = std::max(mPeakAmplitude, amplitude);
+    }
 
-    int32_t ret = aac_vibra_setAmplitude(tmp);
+    int32_t ret = aac_vibra_setAmplitude(static_cast<uint8_t>(amplitude * 0xff));
     if (ret) {
         ALOGW("AAC set amplitude failed: %d\n", ret);
     }
@@ -670,37 +568,12 @@ ndk::ScopedAStatus Vibrator::getPrimitiveDuration(CompositePrimitive primitive,
     if (durationMs == nullptr) {
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
     }
-    switch (primitive) {
-        case CompositePrimitive::NOOP:
-            *durationMs = 0;
-            break;
-        case CompositePrimitive::CLICK:
-            *durationMs = 20;
-            break;
-        case CompositePrimitive::THUD:
-            *durationMs = 25;
-            break;
-        case CompositePrimitive::SPIN:
-            *durationMs = 20;
-            break;
-        case CompositePrimitive::QUICK_RISE:
-            *durationMs = 20;
-            break;
-        case CompositePrimitive::SLOW_RISE:
-            *durationMs = 25;
-            break;
-        case CompositePrimitive::QUICK_FALL:
-            *durationMs = 12;
-            break;
-        case CompositePrimitive::LIGHT_TICK:
-            *durationMs = 5;
-            break;
-        case CompositePrimitive::LOW_TICK:
-            *durationMs = 10;
-            break;
-        default:
-            return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
+    int32_t duration = primitiveDurationMs(primitive);
+    if (duration < 0) {
+        return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
     }
+
+    *durationMs = duration;
     return ndk::ScopedAStatus::ok();
 }
 
@@ -717,7 +590,8 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
         if (e.delayMs < 0 || e.delayMs > 5000) {
             return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
         }
-        if (e.scale < 0.0f || e.scale > 1.0f) {
+        // Written as a positive test so that NaN is rejected as well.
+        if (!(e.scale >= 0.0f && e.scale <= 1.0f)) {
             return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
         }
         if (std::find(supported.begin(), supported.end(), e.primitive) == supported.end()) {
@@ -728,6 +602,12 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
     uint64_t myId = ++mActiveCompositionId;
 
     std::thread([this, composite, callback, myId]() {
+        if (mActiveCompositionId != myId) {
+            // Superseded before playback started; keep the newer vibration's gain.
+            return;
+        }
+        applyFullAmplitude();
+
         for (const auto& e : composite) {
             if (e.delayMs > 0) {
                 if (mActiveCompositionId != myId) {
@@ -744,68 +624,23 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
                 continue;
             }
 
-            uint32_t aacId;
-            int32_t strength;
-            int hwIndex;
-            int hwVmax;
-
-            switch (e.primitive) {
-                case CompositePrimitive::CLICK:
-                    aacId = RICHTAP_DYNAMIC_CLICK;
-                    strength = static_cast<int32_t>(e.scale * (99 - 50) + 50);
-                    hwIndex = 1;
-                    hwVmax = static_cast<int>(e.scale * 1200 + 1300);
-                    break;
-                case CompositePrimitive::THUD:
-                    aacId = RICHTAP_PREBAKED_THUD;
-                    strength = static_cast<int32_t>(e.scale * (99 - 50) + 50);
-                    hwIndex = 3;
-                    hwVmax = static_cast<int>(e.scale * 1200 + 1300);
-                    break;
-                case CompositePrimitive::SPIN:
-                    aacId = RICHTAP_DYNAMIC_POP;
-                    strength = static_cast<int32_t>(e.scale * (95 - 45) + 45);
-                    hwIndex = 3;
-                    hwVmax = static_cast<int>(e.scale * 1000 + 1200);
-                    break;
-                case CompositePrimitive::QUICK_RISE:
-                    aacId = RICHTAP_DYNAMIC_CLICK;
-                    strength = static_cast<int32_t>(e.scale * (90 - 45) + 45);
-                    hwIndex = 1;
-                    hwVmax = static_cast<int>(e.scale * 1000 + 1200);
-                    break;
-                case CompositePrimitive::SLOW_RISE:
-                    aacId = RICHTAP_DYNAMIC_POP;
-                    strength = static_cast<int32_t>(e.scale * (90 - 45) + 45);
-                    hwIndex = 3;
-                    hwVmax = static_cast<int>(e.scale * 1000 + 1200);
-                    break;
-                case CompositePrimitive::QUICK_FALL:
-                    aacId = RICHTAP_DYNAMIC_TICK;
-                    strength = static_cast<int32_t>(e.scale * (80 - 40) + 40);
-                    hwIndex = 1;
-                    hwVmax = static_cast<int>(e.scale * 800 + 1000);
-                    break;
-                case CompositePrimitive::LIGHT_TICK:
-                    aacId = RICHTAP_DYNAMIC_TEXTURE_TICK;
-                    strength = static_cast<int32_t>(e.scale * (60 - 30) + 30);
-                    hwIndex = 2;
-                    hwVmax = static_cast<int>(e.scale * 600 + 600);
-                    break;
-                case CompositePrimitive::LOW_TICK:
-                    aacId = RICHTAP_DYNAMIC_TICK;
-                    strength = static_cast<int32_t>(e.scale * (70 - 40) + 40);
-                    hwIndex = 1;
-                    hwVmax = static_cast<int>(e.scale * 800 + 800);
-                    break;
-                default:
-                    continue;
+            int32_t durationMs = primitiveDurationMs(e.primitive);
+            if (e.scale == 0.0f) {
+                // The framework reserves the primitive's duration even when it
+                // is muted, so keep the composition timeline intact.
+                usleep(durationMs * 1000);
+                continue;
             }
 
-            strength = std::clamp(strength, 1, 99);
-            int32_t dur = playTactileEffect(aacId, strength, hwIndex, hwVmax);
-            int32_t waitMs = (dur > 0) ? dur : 12;
-            usleep(waitMs * 1000);
+            PrimitivePlayback playback = primitivePlayback(e.primitive);
+            int32_t strength =
+                    std::clamp(static_cast<int32_t>(e.scale * 99.0f + 0.5f), 1, 99);
+            int32_t dur = playTactileEffect(playback.aacId, strength, playback.hwWaveform,
+                                            playback.hwVmax);
+            if (dur <= 0) {
+                dur = durationMs;
+            }
+            usleep(dur * 1000);
         }
 
         if (mActiveCompositionId == myId && callback != nullptr) {
@@ -834,7 +669,19 @@ ndk::ScopedAStatus Vibrator::getResonantFrequency(float* resonantFreqHz) {
     if (!resonantFreqHz) {
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
     }
-    *resonantFreqHz = 170.0f;
+    float frequency = RICHTAP_DEFAULT_F0_HZ;
+
+    // RICHTAP_GET_F0 returns the calibrated resonant frequency in 0.1 Hz units.
+    int fd = open(RICHTAP_HAPTIC_DEVICE_NODE, O_RDWR | O_CLOEXEC);
+    if (fd >= 0) {
+        uint32_t f0 = 0;
+        if (ioctl(fd, RICHTAP_IOCTL_GET_F0, &f0) == 0 && f0 >= 1000u && f0 <= 3000u) {
+            frequency = static_cast<float>(f0) / 10.0f;
+        }
+        close(fd);
+    }
+
+    *resonantFreqHz = frequency;
     return ndk::ScopedAStatus::ok();
 }
 
