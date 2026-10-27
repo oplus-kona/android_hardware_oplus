@@ -6,6 +6,7 @@
 #include <aidl/android/hardware/vibrator/BnVibrator.h>
 
 #include <atomic>
+#include <mutex>
 
 namespace aidl {
 namespace android {
@@ -48,8 +49,16 @@ class Vibrator : public BnVibrator {
                                    const std::shared_ptr<IVibratorCallback>& callback) override;
 
   private:
+    void beginVibration();
+    void endVibration();
+    void applyFullAmplitude();
+
     std::atomic<uint64_t> mActiveCompositionId{0};
+    std::mutex mAmplitudeMutex;
     float mCurrentAmplitude = 1.0f;
+    float mPeakAmplitude = 1.0f;
+    bool mAmplitudeSetSinceStart = false;
+    bool mAacReady = false;
 #ifdef USES_OPLUS_AWINIC
     bool mUseSysfsOnOff = false;
 #endif
