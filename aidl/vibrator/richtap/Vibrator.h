@@ -58,6 +58,7 @@ class Vibrator : public BnVibrator {
     float mCurrentAmplitude = 1.0f;
     float mPeakAmplitude = 1.0f;
     bool mAmplitudeSetSinceStart = false;
+    bool mAmplitudeSetForEffect = false;
     bool mAacReady = false;
 #ifdef USES_OPLUS_AWINIC
     bool mUseSysfsOnOff = false;

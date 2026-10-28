@@ -317,6 +317,7 @@ void Vibrator::beginVibration() {
     std::lock_guard<std::mutex> lock(mAmplitudeMutex);
     mPeakAmplitude = mCurrentAmplitude;
     mAmplitudeSetSinceStart = false;
+    mAmplitudeSetForEffect = false;
 
     // Restore the amplitude before starting playback: AOSP calls on() before
     // setAmplitude(), and the previous vibration may have ended in a ramp-down.
@@ -327,6 +328,7 @@ void Vibrator::beginVibration() {
 
 void Vibrator::endVibration() {
     std::lock_guard<std::mutex> lock(mAmplitudeMutex);
+    mAmplitudeSetForEffect = false;
     if (!mAmplitudeSetSinceStart) {
         return;
     }
@@ -339,6 +341,7 @@ void Vibrator::endVibration() {
 
 void Vibrator::applyFullAmplitude() {
     std::lock_guard<std::mutex> lock(mAmplitudeMutex);
+    mAmplitudeSetForEffect = false;
 
     // Effects carry their own strength/scale, so they must not inherit the gain
     // left behind by a previous amplitude-controlled on() call.
@@ -473,7 +476,21 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
 
     // Only cancel the running vibration once the request is known to be valid.
     uint64_t myId = ++mActiveCompositionId;
-    applyFullAmplitude();
+
+    // A framework-provided amplitude applies to this effect only. beginVibration()
+    // keeps it as the current gain, while applyFullAmplitude() restores the
+    // pre-percent behavior when no amplitude was set for this effect.
+    bool explicitAmplitude;
+    {
+        std::lock_guard<std::mutex> lock(mAmplitudeMutex);
+        explicitAmplitude = mAmplitudeSetForEffect;
+        mAmplitudeSetForEffect = false;
+    }
+    if (explicitAmplitude) {
+        beginVibration();
+    } else {
+        applyFullAmplitude();
+    }
     int32_t ret = playTactileEffect(aacEffectId, strengthForEffectStrength(es), hwWaveform,
                                     hwVmax);
     if (ret <= 0) {
@@ -517,6 +534,7 @@ ndk::ScopedAStatus Vibrator::setAmplitude(float amplitude) {
 
     std::lock_guard<std::mutex> lock(mAmplitudeMutex);
     mCurrentAmplitude = amplitude;
+    mAmplitudeSetForEffect = true;
     if (!mAmplitudeSetSinceStart) {
         mPeakAmplitude = amplitude;
         mAmplitudeSetSinceStart = true;
