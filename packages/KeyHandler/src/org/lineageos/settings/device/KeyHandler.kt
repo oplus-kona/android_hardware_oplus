@@ -14,10 +14,12 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.media.AudioSystem
+import android.os.SystemClock
 import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.Settings
+import android.util.Log
 import android.view.KeyEvent
 import com.android.internal.os.DeviceKeyHandler
 import java.io.File
@@ -105,19 +107,27 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
     }
 
     private fun handleMode(position: Int, firstRun: Boolean) {
-        val muteMedia = sharedPreferences.getBoolean(MUTE_MEDIA_WITH_SILENT, false)
-        val showDialog = sharedPreferences.getBoolean(SHOW_DIALOG, true)
-        val invertColors = sharedPreferences.getBoolean(INVERT_COLORS, false)
+        // Snapshot the preferences once: every access with MODE_MULTI_PROCESS
+        // re-reads the backing file, which is far too slow for a key event.
+        val prefs = sharedPreferences
+        val muteMedia = prefs.getBoolean(MUTE_MEDIA_WITH_SILENT, false)
+        val showDialog = prefs.getBoolean(SHOW_DIALOG, true)
+        val invertColors = prefs.getBoolean(INVERT_COLORS, false)
 
         val mode =
             when (position) {
-                POSITION_TOP -> sharedPreferences.getString(ALERT_SLIDER_TOP_KEY, "0")!!.toInt()
-                POSITION_MIDDLE ->
-                    sharedPreferences.getString(ALERT_SLIDER_MIDDLE_KEY, "1")!!.toInt()
-                POSITION_BOTTOM ->
-                    sharedPreferences.getString(ALERT_SLIDER_BOTTOM_KEY, "2")!!.toInt()
+                POSITION_TOP -> prefs.getString(ALERT_SLIDER_TOP_KEY, "0")!!.toInt()
+                POSITION_MIDDLE -> prefs.getString(ALERT_SLIDER_MIDDLE_KEY, "1")!!.toInt()
+                POSITION_BOTTOM -> prefs.getString(ALERT_SLIDER_BOTTOM_KEY, "2")!!.toInt()
                 else -> return
             }
+
+        // Give the user immediate feedback. The actual mode switch happens
+        // asynchronously and must not delay the dialog or the haptics.
+        if (!firstRun) {
+            if (showDialog) sendNotification(position, mode, invertColors)
+            vibrateIfNeeded(mode)
+        }
 
         executorService.submit {
             if (mode != RECORD_AUDIO) {
@@ -170,11 +180,6 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
                     }
                 }
             }
-
-            if (!firstRun) {
-                if (showDialog) sendNotification(position, mode, invertColors)
-                vibrateIfNeeded(mode)
-            }
         }
     }
 
@@ -182,8 +187,18 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
         // Set zen mode
         notificationManager.setZenMode(zenMode, null, TAG)
 
-        // Wait until zen mode change is committed
+        // Wait until zen mode change is committed. This must be bounded:
+        // the change can be rejected (policy, suppression), and an endless
+        // wait would wedge the executor and every following slider event.
+        val deadline = SystemClock.uptimeMillis() + ZEN_MODE_COMMIT_TIMEOUT
         while (notificationManager.zenMode != zenMode) {
+            if (SystemClock.uptimeMillis() >= deadline) {
+                Log.w(
+                    TAG,
+                    "Zen mode $zenMode not committed, current ${notificationManager.zenMode}",
+                )
+                break
+            }
             Thread.sleep(10)
         }
     }
@@ -191,6 +206,7 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
     private fun sendNotification(position: Int, mode: Int, invertColors: Boolean) {
         context.sendBroadcast(
             Intent(CHANGED_ACTION).apply {
+                addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                 putExtra("position", position)
                 putExtra("mode", mode)
                 putExtra("invertColors", invertColors)
@@ -219,6 +235,7 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
 
         // ZEN constants
         private const val ZEN_OFFSET = 2
+        private const val ZEN_MODE_COMMIT_TIMEOUT = 500L
         const val ZEN_PRIORITY_ONLY = 3
         const val ZEN_TOTAL_SILENCE = 4
         const val ZEN_ALARMS_ONLY = 5
