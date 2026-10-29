@@ -148,7 +148,6 @@ class AlertSliderPlugin : OverlayPlugin {
             synchronized(dialogLock) {
                 lastInfo = info
                 handleResetTimeout()
-                launchDozePulse()
                 dialog.setState(info.position, info.mode, info.invertColors)
             }
         }

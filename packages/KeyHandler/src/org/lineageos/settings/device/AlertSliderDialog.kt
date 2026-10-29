@@ -34,7 +34,6 @@ import java.util.Locale
 import java.util.function.Consumer
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
-import android.view.animation.OvershootInterpolator
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -48,6 +47,7 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var recordingSeconds = 0
+    private var timerRunning = false
     private val recordingTimerRunnable =
         object : Runnable {
             override fun run() {
@@ -72,6 +72,7 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
 
     private var isAnimating = false
     private var animator = ValueAnimator()
+    private var animationCancelled = false
 
     private var blurDrawable: BackgroundBlurDrawable? = null
     private var isBlurEnabled = false
@@ -81,6 +82,17 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
         isBlurEnabled = enabled
         applyUiTheme(currentInvertColors)
     }
+
+    // State caches: only touch the views/drawables when something changed.
+    // Each redundant invalidate() forces the cross-window blur to re-render.
+    private var drawnPosition: Int = KeyHandler.POSITION_MIDDLE
+    private var lastRingerMode: Int = Int.MIN_VALUE
+    private var lastInvertColors: Boolean? = null
+    private var lastActiveFg: Int = Int.MIN_VALUE
+    private var lastActiveBg: Int = Int.MIN_VALUE
+    private var lastBlurRadius: Int = -1
+    private var lastBlurColor: Int = 0
+    private var shownGeneration = 0
 
     init {
         window?.let {
@@ -197,10 +209,16 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
         ringerMode: Int,
         invertColors: Boolean,
     ) {
-        if (isAnimating) animator.cancel()
+        if (isAnimating) {
+            // Let the running animation end quietly. Applying its final state
+            // here would reload drawables right before the next frame, which
+            // is the main source of jank while the slider is moved quickly.
+            animationCancelled = true
+            animator.cancel()
+        }
         animator = ValueAnimator()
-        animator.duration = 100
-        animator.interpolator = OvershootInterpolator()
+        animator.duration = POSITION_ANIMATION_MS
+        animator.interpolator = DecelerateInterpolator()
 
         window?.let {
             animator.setValues(
@@ -223,12 +241,13 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
             object : Animator.AnimatorListener {
                 override fun onAnimationStart(animation: Animator) {
                     isAnimating = true
+                    animationCancelled = false
                     currentPosition = position
                     applyUiMode(ringerMode, invertColors)
                     val blur = blurDrawable
                     if (blur != null) {
                         updateBlurCorners(position)
-                    } else {
+                    } else if (drawnPosition != position) {
                         val transition =
                             TransitionDrawable(
                                 arrayOf(
@@ -241,12 +260,14 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
                             )
                         frameView.background = transition
                         transition.setCrossFadeEnabled(true)
-                        transition.startTransition(30)
+                        transition.startTransition(BACKGROUND_TRANSITION_MS)
                     }
                 }
 
                 override fun onAnimationEnd(animation: Animator) {
-                    applyPositionAndBackground(endX, endY, position)
+                    if (!animationCancelled) {
+                        applyPositionAndBackground(endX, endY, position)
+                    }
                     isAnimating = false
                 }
 
@@ -300,8 +321,11 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
             }
         val activeBg = if (invertColors) accentColor else bgColor
 
-        textView.setTextColor(activeFg)
-        iconView.imageTintList = ColorStateList.valueOf(activeFg)
+        if (activeFg != lastActiveFg) {
+            lastActiveFg = activeFg
+            textView.setTextColor(activeFg)
+            iconView.imageTintList = ColorStateList.valueOf(activeFg)
+        }
 
         val blur = blurDrawable
         if (blur != null) {
@@ -311,19 +335,40 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
                 } else {
                     0
                 }
-            blur.setBlurRadius(blurRadius)
+            if (blurRadius != lastBlurRadius) {
+                lastBlurRadius = blurRadius
+                blur.setBlurRadius(blurRadius)
+            }
             val pillColor = if (isBlurEnabled) withAlpha(activeBg, BLUR_ALPHA) else activeBg
-            blur.setColor(pillColor)
-            blur.invalidateSelf()
-            frameView.background = blur
-            frameView.backgroundTintList = null
-            frameView.invalidate()
-        } else {
+            if (pillColor != lastBlurColor) {
+                lastBlurColor = pillColor
+                blur.setColor(pillColor)
+                blur.invalidateSelf()
+            }
+            if (frameView.background !== blur) {
+                frameView.background = blur
+            }
+            if (frameView.backgroundTintList != null) {
+                frameView.backgroundTintList = null
+            }
+        } else if (activeBg != lastActiveBg) {
+            lastActiveBg = activeBg
             frameView.backgroundTintList = ColorStateList.valueOf(activeBg)
         }
     }
 
     private fun applyUiMode(ringerMode: Int, invertColors: Boolean) {
+        // Moving the slider between two positions mapped to the same mode
+        // must not reload the icon or restart the recording timer.
+        if (ringerMode == lastRingerMode &&
+            invertColors == lastInvertColors &&
+            (ringerMode != KeyHandler.RECORD_AUDIO || timerRunning)
+        ) {
+            return
+        }
+        lastRingerMode = ringerMode
+        lastInvertColors = invertColors
+
         iconView.setImageResource(
             when (ringerMode) {
                 AudioManager.RINGER_MODE_SILENT -> R.drawable.ic_volume_ringer_mute
@@ -340,12 +385,14 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
         )
 
         mainHandler.removeCallbacks(recordingTimerRunnable)
+        timerRunning = false
         val text =
             if (ringerMode == KeyHandler.RECORD_AUDIO) {
                 recordingSeconds = 0
                 val label = context.getString(R.string.alert_slider_recording)
                 val initialText = String.format(Locale.US, "%s %02d:%02d", label, 0, 0)
                 mainHandler.postDelayed(recordingTimerRunnable, 1000)
+                timerRunning = true
                 initialText
             } else {
                 val strResId =
@@ -397,12 +444,15 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
         } else {
             frameView.setBackgroundResource(backgroundFor(rotation, position, flip))
         }
+        drawnPosition = position
     }
 
     private fun initBlurDrawable(v: View) {
         if (!CrossWindowBlurListeners.CROSS_WINDOW_BLUR_SUPPORTED) return
         val blur = v.viewRootImpl?.createBackgroundBlurDrawable() ?: return
         blurDrawable = blur
+        lastBlurRadius = -1
+        lastBlurColor = 0
         updateBlurCorners(currentPosition)
         frameView.background = blur
         applyUiTheme(currentInvertColors)
@@ -485,29 +535,41 @@ class AlertSliderDialog(private val context: Context, private val sysuiContext: 
     }
 
     override fun show() {
+        shownGeneration++
+        // Cancel a dismiss that may still be fading out. Its end action is
+        // generation-guarded, so it will not hide this window.
+        dialogView.animate().cancel()
+        if (!isShowing) super.show()
         dialogView.alpha = 0f
-        super.show()
         dialogView
             .animate()
             .alpha(1f)
-            .setDuration(200)
+            .setDuration(SHOW_ANIMATION_MS)
             .setInterpolator(DecelerateInterpolator())
             .start()
     }
 
     override fun dismiss() {
         mainHandler.removeCallbacks(recordingTimerRunnable)
+        timerRunning = false
+        val generation = shownGeneration
         dialogView
             .animate()
             .alpha(0f)
-            .setDuration(200)
+            .setDuration(DISMISS_ANIMATION_MS)
             .setInterpolator(AccelerateInterpolator())
-            .withEndAction { super.dismiss() }
+            .withEndAction {
+                if (generation == shownGeneration && isShowing) super.dismiss()
+            }
             .start()
     }
 
     companion object {
         private const val TAG = "AlertSliderDialog"
         private const val BLUR_ALPHA = 80
+        private const val POSITION_ANIMATION_MS = 100L
+        private const val BACKGROUND_TRANSITION_MS = 80
+        private const val SHOW_ANIMATION_MS = 100L
+        private const val DISMISS_ANIMATION_MS = 150L
     }
 }
