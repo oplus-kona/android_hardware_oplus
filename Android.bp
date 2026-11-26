@@ -4,28 +4,4 @@
 //
 
 soong_namespace {
-    imports: [
-        "vendor/qcom/opensource/commonsys-intf/display",
-    ],
-}
-
-prebuilt_hidl_interfaces {
-    name: "hidl_oplus_cameraextension_interface",
-    interfaces: [
-        "vendor.oplus.hardware.cameraextension@1.0::ICameraExtensionService",
-    ],
-}
-
-prebuilt_hidl_interfaces {
-    name: "hidl_pixelworks_feature_interface",
-    interfaces: [
-        "vendor.pixelworks.hardware.feature@1.0::IIrisFeature",
-    ],
-}
-
-prebuilt_hidl_interfaces {
-    name: "hidl_zeku_explorer_interface",
-    interfaces: [
-        "vendor.zeku.hardware.explorer@1.0::IMmsProvider",
-    ],
 }

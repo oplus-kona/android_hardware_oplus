@@ -1,1 +1,0 @@
-define(`DMA_BUF_IOCTL_SYNC', `0x40086200')

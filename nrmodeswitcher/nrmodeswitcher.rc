@@ -1,5 +1,0 @@
-service vendor.nrmodeswitcher /vendor/bin/nrmodeswitcher
-    class late_start
-    user radio
-    group radio
-    oneshot
