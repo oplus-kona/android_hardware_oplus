@@ -1,5 +1,5 @@
 //
-// SPDX-FileCopyrightText: 2024-2025 The LineageOS Project
+// SPDX-FileCopyrightText: 2024-2026 The LineageOS Project
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,21 +10,18 @@ cc_library_static {
     srcs: [
         "power-mode.cpp",
     ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ] + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "GESTURE_ENABLE_INDEP_NODES"), {
+        any @ nodes: ["-DGESTURE_ENABLE_INDEP_NODES=\"" + nodes + "\""],
+        default: ["-DGESTURE_ENABLE_INDEP_NODES=\"/proc/touchpanel/double_tap_enable_indep\""],
+    }),
     cppflags: select(soong_config_variable("power_libperfmgr", "mode_extension_lib"), {
         any: ["-DLIBPERFMGR_EXT"],
         default: [],
-    }) + select(soong_config_variable("qtipower", "tap_to_wake_node"), {
-        any: ["-DTAP_TO_WAKE_NODE"],
-        default: [],
     }),
-    header_libs: [
-        "vendor.oplus.hardware.touch-headers",
-    ],
     shared_libs: [
         "libbase",
-    ],
-    whole_static_libs: [
-        "vendor.oplus.hardware.charger-V1-ndk",
-        "vendor.oplus.hardware.touch-V2-ndk",
     ],
 }

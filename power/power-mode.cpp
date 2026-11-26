@@ -1,20 +1,24 @@
 /*
- * SPDX-FileCopyrightText: 2024-2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2024-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <aidl/android/hardware/power/BnPower.h>
-#include <aidl/vendor/oplus/hardware/charger/ICharger.h>
-#include <aidl/vendor/oplus/hardware/touch/IOplusTouch.h>
 
+#include <android-base/file.h>
 #include <android-base/logging.h>
-#include <android/binder_manager.h>
-
-#include <OplusTouchConstants.h>
+#include <android-base/strings.h>
+#include <cstdlib>
 
 using aidl::android::hardware::power::Mode;
-using aidl::vendor::oplus::hardware::charger::ICharger;
-using aidl::vendor::oplus::hardware::touch::IOplusTouch;
+using android::base::ReadFileToString;
+using android::base::Split;
+using android::base::Trim;
+using android::base::WriteStringToFile;
+
+namespace {
+constexpr int kDoubleTapGestureBit = 1 << 1;
+}  // anonymous namespace
 
 #ifdef LIBPERFMGR_EXT
 namespace aidl::google::hardware::power::impl::pixel {
@@ -24,11 +28,9 @@ namespace aidl::android::hardware::power::impl {
 
 bool isDeviceSpecificModeSupported(Mode type, bool* _aidl_return) {
     switch (type) {
-#ifndef TAP_TO_WAKE_NODE
         case Mode::DOUBLE_TAP_TO_WAKE:
             *_aidl_return = true;
             return true;
-#endif
         default:
             return false;
     }
@@ -36,45 +38,42 @@ bool isDeviceSpecificModeSupported(Mode type, bool* _aidl_return) {
 
 bool setDeviceSpecificMode(Mode type, bool enabled) {
     switch (type) {
-#ifndef TAP_TO_WAKE_NODE
         case Mode::DOUBLE_TAP_TO_WAKE: {
-            std::string tmp;
-            int contents = 0;
-
-            const std::string instance = std::string() + IOplusTouch::descriptor + "/default";
-            std::shared_ptr<IOplusTouch> oplusTouch = IOplusTouch::fromBinder(
-                    ndk::SpAIBinder(AServiceManager_waitForService(instance.c_str())));
             LOG(INFO) << "Power mode: " << toString(type) << " isDoubleTapEnabled: " << enabled;
+            bool ok = true;
 
-            oplusTouch->touchReadNodeFile(OplusTouchConstants::DEFAULT_TP_IC_ID,
-                                          OplusTouchConstants::DOUBLE_TAP_INDEP_NODE, &tmp);
-            contents = std::stoi(tmp, nullptr, 16);
+            for (const auto& node : Split(GESTURE_ENABLE_INDEP_NODES, " ")) {
+                if (node.empty()) continue;
 
-            if (enabled) {
-                contents |= OplusTouchConstants::DOUBLE_TAP_GESTURE;
-            } else {
-                contents &= ~OplusTouchConstants::DOUBLE_TAP_GESTURE;
+                std::string tmp;
+                if (!ReadFileToString(node, &tmp)) {
+                    LOG(ERROR) << "Failed to read gesture mask from " << node;
+                    ok = false;
+                    continue;
+                }
+
+                const std::string trimmed = Trim(tmp);
+                char* end = nullptr;
+                const long parsed = std::strtol(trimmed.c_str(), &end, 16);
+                if (end == trimmed.c_str()) {
+                    LOG(ERROR) << "Invalid gesture mask '" << trimmed << "' in " << node;
+                    ok = false;
+                    continue;
+                }
+
+                int contents = static_cast<int>(parsed);
+                if (enabled) {
+                    contents |= kDoubleTapGestureBit;
+                } else {
+                    contents &= ~kDoubleTapGestureBit;
+                }
+
+                if (!WriteStringToFile(std::to_string(contents), node, true)) {
+                    LOG(ERROR) << "Failed to write gesture mask to " << node;
+                    ok = false;
+                }
             }
-
-            int aidl_return = 0;
-            oplusTouch->touchWriteNodeFile(OplusTouchConstants::DEFAULT_TP_IC_ID,
-                                           OplusTouchConstants::DOUBLE_TAP_ENABLE_NODE, "1",
-                                           &aidl_return);
-            oplusTouch->touchWriteNodeFile(OplusTouchConstants::DEFAULT_TP_IC_ID,
-                                           OplusTouchConstants::DOUBLE_TAP_INDEP_NODE,
-                                           std::to_string(contents), &aidl_return);
-            return true;
-        }
-#endif
-        case Mode::INTERACTIVE: {
-            const std::string instance = std::string() + ICharger::descriptor + "/default";
-            std::shared_ptr<ICharger> charger = ICharger::fromBinder(
-                    ndk::SpAIBinder(AServiceManager_checkService(instance.c_str())));
-            if (charger) {
-                int aidl_return = 0;
-                charger->notifyScreenStatus(enabled, &aidl_return);
-            }
-            return false;
+            return ok;
         }
         default:
             return false;
