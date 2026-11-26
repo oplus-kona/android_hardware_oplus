@@ -1,3 +1,9 @@
+on boot
+    chown system system /proc/touchpanel/double_tap_enable_indep
+    chmod 0660 /proc/touchpanel/double_tap_enable_indep
+    chown system system /proc/touchpanel/game_switch_enable
+    chmod 0660 /proc/touchpanel/game_switch_enable
+
 service vendor.touch-hal /vendor/bin/hw/vendor.lineage.touch-service.oplus
     class hal
     user system

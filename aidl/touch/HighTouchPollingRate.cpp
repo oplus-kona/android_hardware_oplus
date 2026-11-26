@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2025-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -9,58 +9,33 @@
 
 #include <android-base/file.h>
 #include <android-base/logging.h>
-
-#include <OplusTouchConstants.h>
+#include <android-base/strings.h>
 
 using ::android::base::ReadFileToString;
+using ::android::base::Trim;
 using ::android::base::WriteStringToFile;
-
-namespace {
-
-constexpr const char* kGameSwitchEnablePath = "/proc/touchpanel/game_switch_enable";
-
-}  // anonymous namespace
 
 namespace aidl {
 namespace vendor {
 namespace lineage {
 namespace touch {
 
-HighTouchPollingRate::HighTouchPollingRate(std::shared_ptr<IOplusTouch> oplusTouch)
-    : mOplusTouch(std::move(oplusTouch)) {}
-
 ndk::ScopedAStatus HighTouchPollingRate::getEnabled(bool* _aidl_return) {
     std::string value;
 
-    if (mOplusTouch) {
-        ndk::ScopedAStatus status = mOplusTouch->touchReadNodeFile(
-                OplusTouchConstants::DEFAULT_TP_IC_ID, HTPR_ENABLE_NODE, &value);
-        if (!status.isOk()) {
-            LOG(ERROR) << "Failed to read current AIDL HighTouchPollingRate state";
-            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
-        }
-    } else if (!ReadFileToString(kGameSwitchEnablePath, &value)) {
-        LOG(ERROR) << "Failed to read current HighTouchPollingRate state";
+    if (!ReadFileToString(HTPR_ENABLE_NODE, &value)) {
+        LOG(ERROR) << "Failed to read current HighTouchPollingRate state from " << HTPR_ENABLE_NODE;
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
 
-    *_aidl_return = !value.empty() && value[0] != '0';
+    const std::string trimmed = Trim(value);
+    *_aidl_return = !trimmed.empty() && trimmed[0] != '0';
     return ndk::ScopedAStatus::ok();
 }
 
 ndk::ScopedAStatus HighTouchPollingRate::setEnabled(bool enable) {
-    if (mOplusTouch) {
-        int aidl_return = 0;
-
-        ndk::ScopedAStatus status = mOplusTouch->touchWriteNodeFile(
-                OplusTouchConstants::DEFAULT_TP_IC_ID, HTPR_ENABLE_NODE,
-                enable ? HTPR_ENABLE_VALUE : "0", &aidl_return);
-        if (!status.isOk() || aidl_return < 0) {
-            LOG(ERROR) << "Failed to write AIDL HighTouchPollingRate state";
-            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
-        }
-    } else if (!WriteStringToFile(enable ? "1" : "0", kGameSwitchEnablePath, true)) {
-        LOG(ERROR) << "Failed to write HighTouchPollingRate state";
+    if (!WriteStringToFile(enable ? HTPR_ENABLE_VALUE : "0", HTPR_ENABLE_NODE, true)) {
+        LOG(ERROR) << "Failed to write HighTouchPollingRate state to " << HTPR_ENABLE_NODE;
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
 

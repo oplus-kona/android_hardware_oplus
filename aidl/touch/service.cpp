@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2025-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -16,23 +16,16 @@
 using aidl::vendor::lineage::touch::GloveMode;
 using aidl::vendor::lineage::touch::HighTouchPollingRate;
 using aidl::vendor::lineage::touch::TouchscreenGesture;
-using aidl::vendor::oplus::hardware::touch::IOplusTouch;
 
 int main() {
     ABinderProcess_setThreadPoolMaxThreadCount(0);
 
-    const std::string instance = std::string() + IOplusTouch::descriptor + "/default";
-    std::shared_ptr<IOplusTouch> oplusTouch =
-            USE_OPLUSTOUCH ? IOplusTouch::fromBinder(ndk::SpAIBinder(
-                                     AServiceManager_waitForService(instance.c_str())))
-                           : nullptr;
-
     std::shared_ptr<GloveMode> gm =
-            ENABLE_GM ? ndk::SharedRefBase::make<GloveMode>(oplusTouch) : nullptr;
+            ENABLE_GM ? ndk::SharedRefBase::make<GloveMode>() : nullptr;
     std::shared_ptr<HighTouchPollingRate> htpr =
-            ENABLE_HTPR ? ndk::SharedRefBase::make<HighTouchPollingRate>(oplusTouch) : nullptr;
+            ENABLE_HTPR ? ndk::SharedRefBase::make<HighTouchPollingRate>() : nullptr;
     std::shared_ptr<TouchscreenGesture> tg =
-            ENABLE_TG ? ndk::SharedRefBase::make<TouchscreenGesture>(oplusTouch) : nullptr;
+            ENABLE_TG ? ndk::SharedRefBase::make<TouchscreenGesture>() : nullptr;
 
     if (gm) {
         const std::string instance = std::string(GloveMode::descriptor) + "/default";

@@ -10,8 +10,8 @@ cc_binary {
         true: ["vendor.lineage.touch-service.oplus-gm.xml"],
         default: [],
     }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "ENABLE_HTPR"), {
-        false: [],
-        default: ["vendor.lineage.touch-service.oplus-htpr.xml"],
+        true: ["vendor.lineage.touch-service.oplus-htpr.xml"],
+        default: [],
     }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "ENABLE_TG"), {
         false: [],
         default: ["vendor.lineage.touch-service.oplus-tg.xml"],
@@ -24,47 +24,40 @@ cc_binary {
         "TouchscreenGesture.cpp",
         "service.cpp",
     ],
-    header_libs: [
-        "vendor.oplus.hardware.touch-headers",
-    ],
     shared_libs: [
         "libbase",
         "liblog",
         "libbinder_ndk",
         "libutils",
         "vendor.lineage.touch-V1-ndk",
-        "vendor.oplus.hardware.touch-V2-ndk",
     ],
     include_dirs: select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "INCLUDE_DIR"), {
         any @ flag_val: [flag_val],
         default: [],
     }),
-    cflags: select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "ENABLE_GM"), {
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ] + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "ENABLE_GM"), {
         true: ["-DENABLE_GM=true"],
         default: ["-DENABLE_GM=false"],
     }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "ENABLE_HTPR"), {
-        false: ["-DENABLE_HTPR=false"],
-        default: ["-DENABLE_HTPR=true"],
+        true: ["-DENABLE_HTPR=true"],
+        default: ["-DENABLE_HTPR=false"],
     }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "ENABLE_TG"), {
         false: ["-DENABLE_TG=false"],
         default: ["-DENABLE_TG=true"],
-    }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "GESTURE_ENABLE_INDEP_NODES"), {
-        any @ nodes: ["-DGESTURE_ENABLE_INDEP_NODES=\"" + nodes + "\""],
-        default: ["-DGESTURE_ENABLE_INDEP_NODES=\"/proc/touchpanel/double_tap_enable_indep\""],
+    }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "GLOVE_MODE_NODE"), {
+        any @ node: ["-DGLOVE_MODE_NODE=\"" + node + "\""],
+        default: ["-DGLOVE_MODE_NODE=\"/proc/touchpanel/glove_mode_enable\""],
     }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "HTPR_ENABLE_NODE"), {
-        any @ node: ["-DHTPR_ENABLE_NODE=OplusTouchConstants::" + node],
-        default: ["-DHTPR_ENABLE_NODE=OplusTouchConstants::GAME_SWITCH_ENABLE_NODE"],
+        any @ node: ["-DHTPR_ENABLE_NODE=\"" + node + "\""],
+        default: ["-DHTPR_ENABLE_NODE=\"/proc/touchpanel/game_switch_enable\""],
     }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "HTPR_ENABLE_VALUE"), {
         any @ value: ["-DHTPR_ENABLE_VALUE=\"" + value + "\""],
         default: ["-DHTPR_ENABLE_VALUE=\"1\""],
-    }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "USE_OPLUSTOUCH"), {
-        true: ["-DUSE_OPLUSTOUCH=true"],
-        default: ["-DUSE_OPLUSTOUCH=false"],
+    }) + select(soong_config_variable("OPLUS_LINEAGE_TOUCH_HAL", "GESTURE_ENABLE_INDEP_NODES"), {
+        any @ nodes: ["-DGESTURE_ENABLE_INDEP_NODES=\"" + nodes + "\""],
+        default: ["-DGESTURE_ENABLE_INDEP_NODES=\"/proc/touchpanel/double_tap_enable_indep\""],
     }),
-}
-
-cc_library_headers {
-    name: "vendor.oplus.hardware.touch-headers",
-    vendor_available: true,
-    export_include_dirs: ["touch-headers"],
 }

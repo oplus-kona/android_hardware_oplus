@@ -1,12 +1,11 @@
 /*
- * SPDX-FileCopyrightText: 2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2025-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
 #include <aidl/vendor/lineage/touch/BnTouchscreenGesture.h>
-#include <aidl/vendor/oplus/hardware/touch/IOplusTouch.h>
 #include <map>
 
 namespace aidl {
@@ -14,19 +13,14 @@ namespace vendor {
 namespace lineage {
 namespace touch {
 
-using aidl::vendor::oplus::hardware::touch::IOplusTouch;
-
 class TouchscreenGesture : public BnTouchscreenGesture {
   public:
-    explicit TouchscreenGesture(std::shared_ptr<IOplusTouch> oplusTouch);
+    TouchscreenGesture() = default;
 
     ndk::ScopedAStatus getSupportedGestures(std::vector<Gesture>* _aidl_return) override;
     ndk::ScopedAStatus setGestureEnabled(const Gesture& gesture, bool enabled) override;
 
   private:
-    std::shared_ptr<IOplusTouch> mOplusTouch;
-
-    // See: drivers/input/touchscreen/oplus_touchscreen_v2/touchpanel_common.h
     static constexpr int kGestureStartKey = 246;
     enum {
         kGestureUnknown,

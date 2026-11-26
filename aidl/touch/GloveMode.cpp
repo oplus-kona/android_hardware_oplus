@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2025-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -9,49 +9,33 @@
 
 #include <android-base/file.h>
 #include <android-base/logging.h>
-
-#include <OplusTouchConstants.h>
+#include <android-base/strings.h>
 
 using ::android::base::ReadFileToString;
+using ::android::base::Trim;
 using ::android::base::WriteStringToFile;
-
-namespace {
-
-constexpr const char* kGloveModeEnablePath = "/proc/touchpanel/glove_mode_enable";
-
-}  // anonymous namespace
 
 namespace aidl {
 namespace vendor {
 namespace lineage {
 namespace touch {
 
-GloveMode::GloveMode(std::shared_ptr<IOplusTouch> oplusTouch)
-    : mOplusTouch(std::move(oplusTouch)) {}
-
 ndk::ScopedAStatus GloveMode::getEnabled(bool* _aidl_return) {
     std::string value;
 
-    if (mOplusTouch) {
-        mOplusTouch->touchReadNodeFile(OplusTouchConstants::DEFAULT_TP_IC_ID,
-                                       OplusTouchConstants::GLOVE_MODE_ENABLE_NODE, &value);
-    } else if (!ReadFileToString(kGloveModeEnablePath, &value)) {
-        LOG(ERROR) << "Failed to read current GloveMode state";
+    if (!ReadFileToString(GLOVE_MODE_NODE, &value)) {
+        LOG(ERROR) << "Failed to read current GloveMode state from " << GLOVE_MODE_NODE;
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
 
-    *_aidl_return = value[0] != '0';
+    const std::string trimmed = Trim(value);
+    *_aidl_return = !trimmed.empty() && trimmed[0] != '0';
     return ndk::ScopedAStatus::ok();
 }
 
 ndk::ScopedAStatus GloveMode::setEnabled(bool enable) {
-    if (mOplusTouch) {
-        int aidl_return = 0;
-        mOplusTouch->touchWriteNodeFile(OplusTouchConstants::DEFAULT_TP_IC_ID,
-                                        OplusTouchConstants::GLOVE_MODE_ENABLE_NODE,
-                                        enable ? "1" : "0", &aidl_return);
-    } else if (!WriteStringToFile(enable ? "1" : "0", kGloveModeEnablePath, true)) {
-        LOG(ERROR) << "Failed to write GloveMode state";
+    if (!WriteStringToFile(enable ? "1" : "0", GLOVE_MODE_NODE, true)) {
+        LOG(ERROR) << "Failed to write GloveMode state to " << GLOVE_MODE_NODE;
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
 

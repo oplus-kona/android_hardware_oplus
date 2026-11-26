@@ -6,9 +6,10 @@
 #define LOG_TAG "vendor.lineage.touch-service.oplus"
 
 #include <android-base/file.h>
+#include <android-base/logging.h>
 #include <android-base/strings.h>
+#include <cstdlib>
 
-#include <OplusTouchConstants.h>
 #include <TouchscreenGestureConfig.h>
 
 using ::android::base::ReadFileToString;
@@ -19,9 +20,6 @@ namespace aidl {
 namespace vendor {
 namespace lineage {
 namespace touch {
-
-TouchscreenGesture::TouchscreenGesture(std::shared_ptr<IOplusTouch> oplusTouch)
-    : mOplusTouch(std::move(oplusTouch)) {}
 
 ndk::ScopedAStatus TouchscreenGesture::getSupportedGestures(std::vector<Gesture>* _aidl_return) {
     std::vector<Gesture> gestures;
@@ -37,35 +35,34 @@ ndk::ScopedAStatus TouchscreenGesture::getSupportedGestures(std::vector<Gesture>
 }
 
 ndk::ScopedAStatus TouchscreenGesture::setGestureEnabled(const Gesture& gesture, bool enabled) {
-    const auto updateMask = [&](int contents) {
-        const int bit = 1 << (gesture.keycode - kGestureStartKey);
-        return enabled ? contents | bit : contents & ~bit;
-    };
+    const int offset = gesture.keycode - kGestureStartKey;
+    if (offset < 0 || offset >= 31) {
+        return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+    }
+    const int bit = 1 << offset;
 
-    if (mOplusTouch) {
+    for (const auto& node : ::android::base::Split(GESTURE_ENABLE_INDEP_NODES, " ")) {
+        if (node.empty()) continue;
+
         std::string tmp;
-        mOplusTouch->touchReadNodeFile(OplusTouchConstants::DEFAULT_TP_IC_ID,
-                                       OplusTouchConstants::DOUBLE_TAP_INDEP_NODE, &tmp);
-        const int contents = updateMask(std::stoi(tmp, nullptr, 16));
-        int aidl_return = 0;
-        mOplusTouch->touchWriteNodeFile(OplusTouchConstants::DEFAULT_TP_IC_ID,
-                                        OplusTouchConstants::DOUBLE_TAP_ENABLE_NODE, "1",
-                                        &aidl_return);
-        mOplusTouch->touchWriteNodeFile(OplusTouchConstants::DEFAULT_TP_IC_ID,
-                                        OplusTouchConstants::DOUBLE_TAP_INDEP_NODE,
-                                        std::to_string(contents), &aidl_return);
-    } else {
-        for (const auto& node : ::android::base::Split(GESTURE_ENABLE_INDEP_NODES, " ")) {
-            if (node.empty()) continue;
+        if (!ReadFileToString(node, &tmp)) {
+            LOG(ERROR) << "Failed to read gesture mask from " << node;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+        }
 
-            std::string tmp;
-            if (!ReadFileToString(node, &tmp)) {
-                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
-            }
-            const int contents = updateMask(std::stoi(Trim(tmp), nullptr, 16));
-            if (!WriteStringToFile(std::to_string(contents), node, true)) {
-                return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
-            }
+        const std::string trimmed = Trim(tmp);
+        char* end = nullptr;
+        const long parsed = std::strtol(trimmed.c_str(), &end, 16);
+        if (end == trimmed.c_str()) {
+            LOG(ERROR) << "Invalid gesture mask '" << trimmed << "' in " << node;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+        }
+
+        const int contents = enabled ? (static_cast<int>(parsed) | bit)
+                                     : (static_cast<int>(parsed) & ~bit);
+        if (!WriteStringToFile(std::to_string(contents), node, true)) {
+            LOG(ERROR) << "Failed to write gesture mask to " << node;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
         }
     }
 
