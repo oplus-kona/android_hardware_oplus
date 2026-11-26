@@ -5,5 +5,7 @@ init_daemon_domain(tri_state_key_calibrate)
 
 allow tri_state_key_calibrate vendor_shell_exec:file rx_file_perms;
 allow tri_state_key_calibrate vendor_toolbox_exec:file rx_file_perms;
+allow tri_state_key_calibrate mnt_vendor_file:dir search;
+r_dir_file(tri_state_key_calibrate, vendor_persist_engineer_file)
 allow tri_state_key_calibrate vendor_proc_tristatekey:dir r_dir_perms;
 allow tri_state_key_calibrate vendor_proc_tristatekey:file rw_file_perms;

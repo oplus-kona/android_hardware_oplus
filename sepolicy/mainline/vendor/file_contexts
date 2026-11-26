@@ -3,8 +3,9 @@
 /(vendor|system/vendor)/bin/hw/vendor\.lineage\.livedisplay-service\.oplus		u:object_r:hal_lineage_livedisplay_sysfs_exec:s0
 /(vendor|system/vendor)/bin/hw/vendor\.lineage\.touch-service\.oplus			u:object_r:hal_lineage_touch_default_exec:s0
 
-# Alert slider calibration helper
+# Alert slider calibration helper and factory calibration data
 /(vendor|system/vendor)/bin/tri-state-key-calibrate					u:object_r:tri_state_key_calibrate_exec:s0
+/mnt/vendor/persist/engineermode(/.*)?							u:object_r:vendor_persist_engineer_file:s0
 
 # RichTap haptic device
 /dev/awinic_haptic									u:object_r:vendor_haptic_device:s0
