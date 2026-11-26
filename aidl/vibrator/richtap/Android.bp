@@ -40,8 +40,3 @@ cc_binary {
         default: [],
     }),
 }
-
-cc_library_shared {
-    name: "libaacvibrator",
-    vendor: true,
-}
