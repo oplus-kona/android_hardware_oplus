@@ -23,6 +23,7 @@ import android.util.Log
 import android.view.KeyEvent
 import com.android.internal.os.DeviceKeyHandler
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.Executors
 
 class KeyHandler(private val context: Context) : DeviceKeyHandler {
@@ -89,7 +90,19 @@ class KeyHandler(private val context: Context) : DeviceKeyHandler {
     }
 
     private fun populateKeyState(firstRun: Boolean) {
-        when (File("/proc/tristatekey/tri_state").readText().trim()) {
+        val stateFile = File("/proc/tristatekey/tri_state")
+        if (!stateFile.exists()) {
+            Log.w(TAG, "Alert slider node ${stateFile.path} not found, skipping")
+            return
+        }
+        val state =
+            try {
+                stateFile.readText().trim()
+            } catch (e: IOException) {
+                Log.w(TAG, "Failed to read ${stateFile.path}", e)
+                return
+            }
+        when (state) {
             "1" -> handleMode(POSITION_TOP, firstRun)
             "2" -> handleMode(POSITION_MIDDLE, firstRun)
             "3" -> handleMode(POSITION_BOTTOM, firstRun)
