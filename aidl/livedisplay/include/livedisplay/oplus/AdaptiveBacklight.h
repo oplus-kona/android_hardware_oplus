@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2025-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -14,14 +14,11 @@ namespace livedisplay {
 
 class AdaptiveBacklight : public BnAdaptiveBacklight {
   public:
-    AdaptiveBacklight();
+    AdaptiveBacklight() = default;
 
     // Methods from ::aidl::vendor::lineage::livedisplay::BnAdaptiveBacklight follow.
     ndk::ScopedAStatus getEnabled(bool* _aidl_return) override;
     ndk::ScopedAStatus setEnabled(bool enabled) override;
-
-  private:
-    int mOplusDisplayFd;
 };
 
 }  // namespace livedisplay

@@ -1,47 +1,40 @@
 /*
- * SPDX-FileCopyrightText: 2019-2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2019-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #define LOG_TAG "DisplayModesService"
 
+#include <android-base/file.h>
 #include <android-base/logging.h>
-#include <android-base/properties.h>
-#include <fcntl.h>
 #include <livedisplay/oplus/DisplayModes.h>
-#include <oplus/oplus_display_panel.h>
 #include <fstream>
+
+using ::android::base::WriteStringToFile;
 
 namespace aidl {
 namespace vendor {
 namespace lineage {
 namespace livedisplay {
 
-static const std::string kModeBasePath = "/sys/class/drm/card0-DSI-1/";
 static const std::string kDefaultPath = "/data/vendor/display/default_display_mode";
 
-// Mode ids here must match qdcm display mode ids
 const std::map<int32_t, DisplayModes::ModeInfo> DisplayModes::kModeMap = {
-        {0, {"Vivid", 0, 0}},
-        {1, {"Natural", 1, 1}},
-        {2, {"Cinematic", 0, 1}},
-        {3, {"Brilliant", 4, 0}},
+        {0, {"Vivid", 0}},
+        {1, {"Natural", 1}},
+        {2, {"Cinematic", 2}},
+        {3, {"Brilliant", 3}},
 };
 
-DisplayModes::DisplayModes(std::shared_ptr<sdm::SDMController> controller)
-    : mController(controller),
-      mOplusDisplayFd(open("/dev/oplus_display", O_RDWR)),
-      mCurrentModeId(0),
-      mDefaultModeId(0) {
+DisplayModes::DisplayModes() : mCurrentModeId(0), mDefaultModeId(0) {
     std::ifstream defaultFile(kDefaultPath);
-
-    defaultFile >> mDefaultModeId;
-    LOG(DEBUG) << "Default file read result " << mDefaultModeId << " fail " << defaultFile.fail();
-
+    int32_t savedMode = 0;
+    if (defaultFile >> savedMode && kModeMap.find(savedMode) != kModeMap.end()) {
+        mDefaultModeId = savedMode;
+    }
     setDisplayMode(mDefaultModeId, false);
 }
 
-// Methods from ::aidl::vendor::lineage::livedisplay::BnDisplayModes follow.
 ndk::ScopedAStatus DisplayModes::getDisplayModes(std::vector<DisplayMode>* _aidl_return) {
     std::vector<DisplayMode> modes;
 
@@ -67,16 +60,15 @@ ndk::ScopedAStatus DisplayModes::setDisplayMode(int32_t modeID, bool makeDefault
     if (iter == kModeMap.end()) {
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
-    if (mOplusDisplayFd >= 0) {
-        ioctl(mOplusDisplayFd, PANEL_IOCTL_SET_SEED, &iter->second.seedMode);
+    if (!WriteStringToFile(std::to_string(iter->second.seedValue), DISPLAY_MODES_NODE, true)) {
+        LOG(ERROR) << "Failed to write DisplayMode " << modeID << " to " << DISPLAY_MODES_NODE;
+        return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
-    mController->setActiveDisplayMode(iter->second.displayModeId);
     mCurrentModeId = iter->first;
     if (makeDefault) {
         std::ofstream defaultFile(kDefaultPath);
         defaultFile << iter->first;
         if (!defaultFile.fail()) {
-            mController->setDefaultDisplayMode(iter->second.displayModeId);
             mDefaultModeId = iter->first;
         }
     }

@@ -1,40 +1,44 @@
 /*
- * SPDX-FileCopyrightText: 2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2025-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #define LOG_TAG "AdaptiveBacklightService"
 
+#include <android-base/file.h>
 #include <android-base/logging.h>
-#include <fcntl.h>
+#include <android-base/strings.h>
 #include <livedisplay/oplus/AdaptiveBacklight.h>
-#include <oplus/oplus_display_panel.h>
+
+using ::android::base::ReadFileToString;
+using ::android::base::Trim;
+using ::android::base::WriteStringToFile;
 
 namespace aidl {
 namespace vendor {
 namespace lineage {
 namespace livedisplay {
 
-AdaptiveBacklight::AdaptiveBacklight() : mOplusDisplayFd(open("/dev/oplus_display", O_RDWR)) {}
-
 ndk::ScopedAStatus AdaptiveBacklight::getEnabled(bool* _aidl_return) {
-    unsigned int value;
-    if (ioctl(mOplusDisplayFd, PANEL_IOCTL_GET_CABC_STATUS, &value) != 0) {
-        LOG(ERROR) << "Failed to read current AdaptiveBacklight state";
+    std::string value;
+    if (!ReadFileToString(ADAPTIVE_BACKLIGHT_NODE, &value)) {
+        LOG(ERROR) << "Failed to read current AdaptiveBacklight state from "
+                   << ADAPTIVE_BACKLIGHT_NODE;
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
-    *_aidl_return = value > 0;
+    const std::string trimmed = Trim(value);
+    *_aidl_return = !trimmed.empty() && trimmed[0] != '0';
     return ndk::ScopedAStatus::ok();
 }
 
 ndk::ScopedAStatus AdaptiveBacklight::setEnabled(bool enabled) {
-    bool isEnabled;
+    bool isEnabled = false;
     if (auto status = getEnabled(&isEnabled); !status.isOk()) {
         return status;
     }
-    unsigned int value = enabled;
-    if (isEnabled != enabled && ioctl(mOplusDisplayFd, PANEL_IOCTL_SET_CABC_STATUS, &value) != 0) {
-        LOG(ERROR) << "Failed to set AdaptiveBacklight state";
+    if (isEnabled != enabled &&
+        !WriteStringToFile(enabled ? "1" : "0", ADAPTIVE_BACKLIGHT_NODE, true)) {
+        LOG(ERROR) << "Failed to set AdaptiveBacklight state on " << ADAPTIVE_BACKLIGHT_NODE;
         return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
     return ndk::ScopedAStatus::ok();

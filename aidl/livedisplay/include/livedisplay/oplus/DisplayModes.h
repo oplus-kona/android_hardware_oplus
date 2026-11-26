@@ -1,13 +1,14 @@
 /*
- * SPDX-FileCopyrightText: 2019-2025 The LineageOS Project
+ * SPDX-FileCopyrightText: 2019-2026 The LineageOS Project
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
 #include <aidl/vendor/lineage/livedisplay/BnDisplayModes.h>
-#include <livedisplay/sdm/SDMController.h>
+#include <functional>
 #include <map>
+#include <string>
 
 namespace aidl {
 namespace vendor {
@@ -16,7 +17,7 @@ namespace livedisplay {
 
 class DisplayModes : public BnDisplayModes {
   public:
-    DisplayModes(std::shared_ptr<sdm::SDMController> controller);
+    DisplayModes();
 
     using DisplayModeSetCallback = std::function<void()>;
     inline void registerDisplayModeSetCallback(DisplayModeSetCallback callback) {
@@ -32,12 +33,9 @@ class DisplayModes : public BnDisplayModes {
   private:
     struct ModeInfo {
         std::string name;
-        int32_t displayModeId;
-        uint32_t seedMode;
+        uint32_t seedValue;
     };
     static const std::map<int32_t, ModeInfo> kModeMap;
-    std::shared_ptr<sdm::SDMController> mController;
-    int32_t mOplusDisplayFd;
     int32_t mCurrentModeId;
     int32_t mDefaultModeId;
     DisplayModeSetCallback mOnDisplayModeSet;

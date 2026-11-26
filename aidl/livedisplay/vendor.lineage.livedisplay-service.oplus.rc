@@ -1,3 +1,7 @@
+on boot
+    chown system system /sys/kernel/oplus_display/hbm
+    chmod 0660 /sys/kernel/oplus_display/hbm
+
 service vendor.livedisplay-hal /vendor/bin/hw/vendor.lineage.livedisplay-service.oplus
     class late_start
     user system

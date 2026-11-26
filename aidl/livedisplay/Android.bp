@@ -1,5 +1,5 @@
 //
-// SPDX-FileCopyrightText: 2019-2025 The LineageOS Project
+// SPDX-FileCopyrightText: 2019-2026 The LineageOS Project
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -41,17 +41,12 @@ cc_binary {
     }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_DM"), {
         true: ["vendor.lineage.livedisplay-service.oplus-dm.xml"],
         default: [],
-    }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_PA"), {
-        false: [],
-        default: ["vendor.lineage.livedisplay-service.oplus-pa.xml"],
     }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_SE"), {
         false: [],
         default: ["vendor.lineage.livedisplay-service.oplus-se.xml"],
     }),
     relative_install_path: "hw",
     srcs: [
-        ":vendor.lineage.livedisplay-sdm-pa",
-        ":vendor.lineage.livedisplay-sdm-utils",
         ":vendor.lineage.livedisplay-oplus-ab",
         ":vendor.lineage.livedisplay-oplus-af",
         ":vendor.lineage.livedisplay-oplus-dm",
@@ -61,16 +56,16 @@ cc_binary {
     shared_libs: [
         "libbase",
         "libbinder_ndk",
-        "libbinder",
         "libutils",
         "vendor.lineage.livedisplay-V1-ndk",
     ],
     header_libs: [
-        "kernel_headers.oplus",
-        "vendor.lineage.livedisplay-sdm-headers",
         "vendor.lineage.livedisplay-oplus-headers",
     ],
-    cflags: select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_AB"), {
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ] + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_AB"), {
         true: ["-DENABLE_AB=true"],
         default: ["-DENABLE_AB=false"],
     }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_AF"), {
@@ -79,12 +74,21 @@ cc_binary {
     }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_DM"), {
         true: ["-DENABLE_DM=true"],
         default: ["-DENABLE_DM=false"],
-    }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_PA"), {
-        false: ["-DENABLE_PA=false"],
-        default: ["-DENABLE_PA=true"],
     }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ENABLE_SE"), {
         false: ["-DENABLE_SE=false"],
         default: ["-DENABLE_SE=true"],
+    }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "HBM_NODE"), {
+        any @ node: ["-DHBM_NODE=\"" + node + "\""],
+        default: ["-DHBM_NODE=\"/sys/kernel/oplus_display/hbm\""],
+    }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ANTI_FLICKER_NODE"), {
+        any @ node: ["-DANTI_FLICKER_NODE=\"" + node + "\""],
+        default: ["-DANTI_FLICKER_NODE=\"/sys/kernel/oplus_display/dimlayer_bl_en\""],
+    }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "ADAPTIVE_BACKLIGHT_NODE"), {
+        any @ node: ["-DADAPTIVE_BACKLIGHT_NODE=\"" + node + "\""],
+        default: ["-DADAPTIVE_BACKLIGHT_NODE=\"/sys/kernel/oplus_display/cabc\""],
+    }) + select(soong_config_variable("OPLUS_LINEAGE_LIVEDISPLAY_HAL", "DISPLAY_MODES_NODE"), {
+        any @ node: ["-DDISPLAY_MODES_NODE=\"" + node + "\""],
+        default: ["-DDISPLAY_MODES_NODE=\"/sys/kernel/oplus_display/seed\""],
     }),
-    proprietary: true,
+    vendor: true,
 }
