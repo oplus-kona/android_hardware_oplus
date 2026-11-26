@@ -1,0 +1,3 @@
+genfscon sysfs /kernel/oplus_display	u:object_r:vendor_sysfs_oplus_display:s0
+genfscon proc /touchpanel		u:object_r:vendor_proc_touchpanel:s0
+genfscon proc /tristatekey		u:object_r:vendor_proc_tristatekey:s0

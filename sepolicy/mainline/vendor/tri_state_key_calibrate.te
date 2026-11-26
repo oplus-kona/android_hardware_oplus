@@ -1,0 +1,9 @@
+type tri_state_key_calibrate, domain;
+type tri_state_key_calibrate_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(tri_state_key_calibrate)
+
+allow tri_state_key_calibrate vendor_shell_exec:file rx_file_perms;
+allow tri_state_key_calibrate vendor_toolbox_exec:file rx_file_perms;
+allow tri_state_key_calibrate vendor_proc_tristatekey:dir r_dir_perms;
+allow tri_state_key_calibrate vendor_proc_tristatekey:file rw_file_perms;
