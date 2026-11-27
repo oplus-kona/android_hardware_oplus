@@ -7,6 +7,7 @@ on boot
     chown system system /sys/class/leds/vibrator/duration
     chown system system /sys/class/leds/vibrator/state
     chown system system /sys/class/leds/vibrator/brightness
+    chown system system /sys/class/leds/vibrator/gain
     chown system system /sys/class/leds/vibrator/vmax
     chown system system /sys/class/leds/vibrator/waveform_index
     chmod 0660 /sys/class/leds/vibrator/oplus_activate
@@ -16,6 +17,7 @@ on boot
     chmod 0660 /sys/class/leds/vibrator/duration
     chmod 0660 /sys/class/leds/vibrator/state
     chmod 0660 /sys/class/leds/vibrator/brightness
+    chmod 0660 /sys/class/leds/vibrator/gain
     chmod 0660 /sys/class/leds/vibrator/vmax
     chmod 0660 /sys/class/leds/vibrator/waveform_index
     chown system system /dev/awinic_haptic

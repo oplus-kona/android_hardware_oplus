@@ -67,7 +67,19 @@ static constexpr int32_t RICHTAP_RTP_PIPELINE_MARGIN_MS = 15;
 // RICHTAP_RTP_MODE stop cuts off the previous tick mid-waveform (GLB_ST=0x08).
 static constexpr int32_t RICHTAP_COMPOSE_STEP_MARGIN_MS = 8;
 
+// Hardware SRAM playback via /sys/class/leds/vibrator/brightness runs on the
+// Linux LED classdev set_brightness_delayed kworker (~1 ms wakeup + ~5-6 ms
+// I2C setup and 2 ms boost settle before GO=1). Keep enough completion and
+// inter-primitive margin so trailing off() or back-to-back compose() ticks
+// never clip the active braking tail (verified via I2C ftrace).
+static constexpr int32_t RICHTAP_SRAM_PIPELINE_MARGIN_MS = 10;
+static constexpr int32_t RICHTAP_SRAM_COMPOSE_STEP_MARGIN_MS = 8;
+static constexpr int RICHTAP_SRAM_VMAX_MV = 2500;
+static constexpr int RICHTAP_SRAM_MAX_GAIN = 0x80;
+
 #ifdef USES_OPLUS_AWINIC
+static constexpr int32_t RICHTAP_SRAM_DOUBLE_CLICK_GAP_MS = 65;
+static constexpr int RICHTAP_SRAM_MIN_GAIN = 0x18;
 #define RICHTAP_OPLUS_ACTIVATE_NODE   "/sys/class/leds/vibrator/oplus_activate"
 #define RICHTAP_OPLUS_DURATION_NODE   "/sys/class/leds/vibrator/oplus_duration"
 #define RICHTAP_OPLUS_STATE_NODE      "/sys/class/leds/vibrator/oplus_state"
@@ -75,6 +87,7 @@ static constexpr int32_t RICHTAP_COMPOSE_STEP_MARGIN_MS = 8;
 #define RICHTAP_DURATION_NODE         "/sys/class/leds/vibrator/duration"
 #define RICHTAP_STATE_NODE            "/sys/class/leds/vibrator/state"
 #define RICHTAP_BRIGHTNESS_NODE       "/sys/class/leds/vibrator/brightness"
+#define RICHTAP_GAIN_NODE             "/sys/class/leds/vibrator/gain"
 #define RICHTAP_VMAX_NODE             "/sys/class/leds/vibrator/vmax"
 #define RICHTAP_WAVEFORM_INDEX_NODE   "/sys/class/leds/vibrator/waveform_index"
 #endif
@@ -135,6 +148,12 @@ static bool hasSysfsOnOffSupport() {
            access(RICHTAP_ACTIVATE_NODE, F_OK) == 0;
 }
 
+static bool hasSysfsWaveformSupport() {
+    return access(RICHTAP_BRIGHTNESS_NODE, W_OK) == 0 &&
+           access(RICHTAP_WAVEFORM_INDEX_NODE, W_OK) == 0 &&
+           access(RICHTAP_VMAX_NODE, W_OK) == 0;
+}
+
 static int sysfsOn(int32_t timeoutMs) {
     if (access(RICHTAP_OPLUS_ACTIVATE_NODE, F_OK) == 0) {
         int ret = writeNode(RICHTAP_OPLUS_STATE_NODE, "1");
@@ -166,24 +185,40 @@ static int sysfsOn(int32_t timeoutMs) {
 }
 
 static int sysfsOff() {
+    int ret = -ENOENT;
+
     if (access(RICHTAP_OPLUS_ACTIVATE_NODE, F_OK) == 0) {
-        return writeNode(RICHTAP_OPLUS_ACTIVATE_NODE, "0");
+        ret = writeNode(RICHTAP_OPLUS_ACTIVATE_NODE, "0");
     } else if (access(RICHTAP_ACTIVATE_NODE, F_OK) == 0) {
-        return writeNode(RICHTAP_ACTIVATE_NODE, "0");
+        ret = writeNode(RICHTAP_ACTIVATE_NODE, "0");
     }
 
-    return -ENOENT;
+    // brightness=0 stops active RAM-mode waveforms (oplus_activate=0 is a no-op
+    // when timed-loop state is already 0).
+    if (access(RICHTAP_BRIGHTNESS_NODE, W_OK) == 0) {
+        int bRet = writeNode(RICHTAP_BRIGHTNESS_NODE, "0");
+        if (ret == -ENOENT) {
+            ret = bRet;
+        }
+    }
+
+    return ret;
 }
 
-static int sysfsWaveform(int waveformIndex, int vmax) {
+static int sramGainFromScale(float scale) {
+    int gain = static_cast<int>(scale * static_cast<float>(RICHTAP_SRAM_MAX_GAIN) + 0.5f);
+    return std::clamp(gain, RICHTAP_SRAM_MIN_GAIN, RICHTAP_SRAM_MAX_GAIN);
+}
+
+static int sysfsWaveform(int waveformIndex, int vmax, int gain) {
     int ret;
 
-    if (access(RICHTAP_BRIGHTNESS_NODE, F_OK) != 0 ||
-        access(RICHTAP_WAVEFORM_INDEX_NODE, F_OK) != 0) {
+    if (access(RICHTAP_BRIGHTNESS_NODE, W_OK) != 0 ||
+        access(RICHTAP_WAVEFORM_INDEX_NODE, W_OK) != 0) {
         return -ENOENT;
     }
 
-    if (access(RICHTAP_VMAX_NODE, F_OK) == 0 && vmax > 0) {
+    if (access(RICHTAP_VMAX_NODE, W_OK) == 0 && vmax > 0) {
         ret = writeNode(RICHTAP_VMAX_NODE, vmax);
         if (ret != 0) {
             return ret;
@@ -195,7 +230,28 @@ static int sysfsWaveform(int waveformIndex, int vmax) {
         return ret;
     }
 
-    return writeNode(RICHTAP_BRIGHTNESS_NODE, 255);
+    // Write gain AFTER waveform_index so AW8697 full-scale waveforms (#16-#18)
+    // receive the exact requested gain (up to 0x80) instead of being capped.
+    if (access(RICHTAP_GAIN_NODE, W_OK) == 0 && gain > 0) {
+        ret = writeNode(RICHTAP_GAIN_NODE,
+                        std::clamp(gain, RICHTAP_SRAM_MIN_GAIN, RICHTAP_SRAM_MAX_GAIN));
+        if (ret != 0) {
+            return ret;
+        }
+    }
+
+    return writeNode(RICHTAP_BRIGHTNESS_NODE, 1);
+}
+static float scaleForEffectStrength(EffectStrength strength) {
+    switch (strength) {
+        case EffectStrength::LIGHT:
+            return 0.50f;
+        case EffectStrength::MEDIUM:
+            return 0.80f;
+        case EffectStrength::STRONG:
+        default:
+            return 1.00f;
+    }
 }
 #endif
 
@@ -214,26 +270,26 @@ static int32_t strengthForEffectStrength(EffectStrength strength) {
     }
 }
 
-static int32_t primitiveDurationMs(CompositePrimitive primitive) {
+static int32_t primitiveDurationMs(CompositePrimitive primitive, bool useSram) {
     switch (primitive) {
         case CompositePrimitive::NOOP:
             return 0;
         case CompositePrimitive::CLICK:
-            return 12;
+            return useSram ? 15 : 12;
         case CompositePrimitive::THUD:
-            return 36;
+            return useSram ? 14 : 36;
         case CompositePrimitive::SPIN:
-            return 24;
+            return useSram ? 12 : 24;
         case CompositePrimitive::QUICK_RISE:
             return 12;
         case CompositePrimitive::SLOW_RISE:
-            return 30;
+            return useSram ? 14 : 30;
         case CompositePrimitive::QUICK_FALL:
             return 12;
         case CompositePrimitive::LIGHT_TICK:
-            return 11;
+            return useSram ? 6 : 11;
         case CompositePrimitive::LOW_TICK:
-            return 12;
+            return useSram ? 14 : 12;
         default:
             return -1;
     }
@@ -243,46 +299,80 @@ struct PrimitivePlayback {
     uint32_t aacId;
     int hwWaveform;
     int hwVmax;
+    int32_t hwDurationMs;
+    float hwGainScale;
 };
 
 static PrimitivePlayback primitivePlayback(CompositePrimitive primitive) {
     switch (primitive) {
         case CompositePrimitive::CLICK:
-            return {RICHTAP_JND_CLICK, 1, 2200};
+            // Stock OxygenOS SRAM wav #18 (14.6 ms sharp mechanical snap @ 8.75V)
+            return {RICHTAP_JND_CLICK, 18, RICHTAP_SRAM_VMAX_MV, 15, 1.00f};
         case CompositePrimitive::THUD:
-            return {RICHTAP_JND_THUD, 3, 2400};
+            // Stock OxygenOS SRAM wav #6 (13.6 ms clean low thud)
+            return {RICHTAP_JND_THUD, 6, RICHTAP_SRAM_VMAX_MV, 14, 1.00f};
         case CompositePrimitive::SPIN:
-            return {RICHTAP_JND_POP, 3, 2100};
+            // Stock OxygenOS SRAM wav #2 (12.0 ms warm punchy pop)
+            return {RICHTAP_JND_POP, 2, RICHTAP_SRAM_VMAX_MV, 12, 0.90f};
         case CompositePrimitive::QUICK_RISE:
-            return {RICHTAP_JND_CLICK, 1, 1800};
+            // Stock OxygenOS SRAM wav #17 (11.1 ms 180 Hz tight click)
+            return {RICHTAP_JND_CLICK, 17, RICHTAP_SRAM_VMAX_MV, 12, 0.85f};
         case CompositePrimitive::SLOW_RISE:
-            return {RICHTAP_JND_HEAVY_CLICK, 3, 2100};
+            // Stock OxygenOS SRAM wav #4 (13.2 ms asymmetric heavy snap)
+            return {RICHTAP_JND_HEAVY_CLICK, 4, RICHTAP_SRAM_VMAX_MV, 14, 0.95f};
         case CompositePrimitive::QUICK_FALL:
-            return {RICHTAP_JND_TICK, 1, 1500};
+            // Stock OxygenOS SRAM wav #3 (11.1 ms crisp tick)
+            return {RICHTAP_JND_TICK, 3, RICHTAP_SRAM_VMAX_MV, 12, 0.85f};
         case CompositePrimitive::LIGHT_TICK:
-            return {RICHTAP_JND_LIGHT_TICK, 2, 1200};
+            // Stock OxygenOS SRAM wav #10 (5.9 ms single-cycle 170 Hz micro-tick)
+            return {RICHTAP_JND_LIGHT_TICK, 10, RICHTAP_SRAM_VMAX_MV, 6, 1.00f};
         case CompositePrimitive::LOW_TICK:
-            return {RICHTAP_JND_TICK, 1, 1500};
+            // Stock OxygenOS SRAM wav #1 (13.8 ms 217 Hz smooth slider roller)
+            return {RICHTAP_JND_TICK, 1, RICHTAP_SRAM_VMAX_MV, 14, 1.00f};
         default:
-            return {0, 0, 0};
+            return {0, 0, 0, 0, 0.0f};
     }
 }
 
-static int32_t playTactileEffect(uint32_t aacEffectId, int32_t strength,
-                                 int hwWaveformIndex __unused, int hwVmax __unused) {
-    // 1. Attempt RichTap AAC looper playback
+static int32_t playTactileEffect(uint32_t aacEffectId, int32_t strength, int hwWaveformIndex,
+                                 int hwVmax, int hwGain, int32_t hwDurationMs,
+                                 bool preferSram, std::atomic<bool>& rtpActive, bool* usedSram) {
+    if (usedSram != nullptr) {
+        *usedSram = false;
+    }
+
+#ifdef USES_OPLUS_AWINIC
+    // 1. Prefer AW8697 native F0-locked OxygenOS SRAM waveform via sysfs for
+    // crisp, low-latency (~3 ms) tactile transients at 8.75V boost rail.
+    if (preferSram && hwWaveformIndex > 0) {
+        if (rtpActive.exchange(false)) {
+            int32_t stopState = -1;
+            aac_vibra_stop(&stopState);
+        }
+        int ret = sysfsWaveform(hwWaveformIndex, hwVmax, hwGain);
+        if (ret == 0) {
+            if (usedSram != nullptr) {
+                *usedSram = true;
+            }
+            return hwDurationMs > 0 ? hwDurationMs : 15;
+        }
+    }
+#else
+    (void)hwWaveformIndex;
+    (void)hwVmax;
+    (void)hwGain;
+    (void)hwDurationMs;
+    (void)preferSram;
+#endif
+
+    // 2. Fallback to RichTap AAC looper playback
     int32_t dur = aac_vibra_looper_prebaked_effect(aacEffectId, strength);
     if (dur > 0) {
+        rtpActive.store(true);
         return dur;
     }
 
 #ifdef USES_OPLUS_AWINIC
-    // 2. Fallback to AW8697 native hardware RAM waveform via sysfs
-    int ret = sysfsWaveform(hwWaveformIndex, hwVmax);
-    if (ret == 0) {
-        return 20;
-    }
-
     // 3. Fallback to short sysfs on-pulse
     if (sysfsOn(15) == 0) {
         return 15;
@@ -297,8 +387,10 @@ Vibrator::Vibrator() {
 
 #ifdef USES_OPLUS_AWINIC
     mUseSysfsOnOff = hasSysfsOnOffSupport();
-    if (mUseSysfsOnOff) {
-        ALOGI("Using sysfs backend for on/off and hardware waveforms");
+    mUseSysfsWaveform = hasSysfsWaveformSupport();
+    if (mUseSysfsOnOff || mUseSysfsWaveform) {
+        ALOGI("Sysfs backend ready (onOff=%d, sramWaveform=%d)", mUseSysfsOnOff,
+              mUseSysfsWaveform);
     }
 #endif
 
@@ -367,7 +459,7 @@ ndk::ScopedAStatus Vibrator::off() {
     mActiveCompositionId++;
 
 #ifdef USES_OPLUS_AWINIC
-    if (mUseSysfsOnOff) {
+    if (mUseSysfsOnOff || mUseSysfsWaveform) {
         int ret = sysfsOff();
         if (ret) {
             ALOGW("Sysfs off failed: %d\n", ret);
@@ -377,10 +469,12 @@ ndk::ScopedAStatus Vibrator::off() {
 
     // aac_vibra_off() is a no-op in the blob; aac_vibra_stop() is what issues
     // the RICHTAP_STOP_MODE ioctl that actually cancels playback.
-    int32_t stopState = -1;
-    int32_t ret = aac_vibra_stop(&stopState);
-    if (ret) {
-        ALOGW("AAC stop failed: %d\n", ret);
+    if (mRtpActive.exchange(false) || mAacReady) {
+        int32_t stopState = -1;
+        int32_t ret = aac_vibra_stop(&stopState);
+        if (ret) {
+            ALOGW("AAC stop failed: %d\n", ret);
+        }
     }
 
     endVibration();
@@ -399,7 +493,9 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
     // The AAC looper already turns short on() requests into crisp transients
     // (<56 ms) and keeps the full requested duration for longer ones.
     int32_t ret = aac_vibra_looper_on(static_cast<uint32_t>(timeoutMs));
-    if (ret <= 0) {
+    if (ret > 0) {
+        mRtpActive.store(true);
+    } else {
 #ifdef USES_OPLUS_AWINIC
         if (mUseSysfsOnOff) {
             int sysRet = sysfsOn(timeoutMs);
@@ -421,6 +517,7 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         std::thread([this, callback, waitMs, myId] {
             usleep(waitMs * 1000);
             if (mActiveCompositionId == myId) {
+                mRtpActive.store(false);
                 endVibration();
                 callback->onComplete();
             }
@@ -439,49 +536,53 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
 
     uint32_t aacEffectId;
     int hwWaveform;
-    int hwVmax;
+    int hwVmax = RICHTAP_SRAM_VMAX_MV;
+    int32_t hwDurationMs;
+    [[maybe_unused]] float hwGainScale = 1.0f;
+    [[maybe_unused]] bool isDoubleClick = false;
 
     switch (effect) {
         case Effect::TEXTURE_TICK:
             aacEffectId = RICHTAP_JND_LIGHT_TICK;
-            hwWaveform = 2;
-            hwVmax = 1200;
+            hwWaveform = 10;
+            hwDurationMs = 6;
             break;
 
         case Effect::TICK:
             aacEffectId = RICHTAP_JND_TICK;
-            hwWaveform = 1;
-            hwVmax = 1500;
+            hwWaveform = 3;
+            hwDurationMs = 12;
             break;
 
         case Effect::CLICK:
             aacEffectId = RICHTAP_JND_CLICK;
-            hwWaveform = 1;
-            hwVmax = 2200;
+            hwWaveform = 18;
+            hwDurationMs = 15;
             break;
 
         case Effect::DOUBLE_CLICK:
             aacEffectId = RICHTAP_PREBAKED_DOUBLE_CLICK;
-            hwWaveform = 1;
-            hwVmax = 2200;
+            hwWaveform = 17;
+            hwDurationMs = 12;
+            isDoubleClick = true;
             break;
 
         case Effect::POP:
             aacEffectId = RICHTAP_JND_POP;
-            hwWaveform = 3;
-            hwVmax = 2100;
+            hwWaveform = 2;
+            hwDurationMs = 12;
             break;
 
         case Effect::THUD:
             aacEffectId = RICHTAP_JND_THUD;
-            hwWaveform = 3;
-            hwVmax = 2400;
+            hwWaveform = 6;
+            hwDurationMs = 14;
             break;
 
         case Effect::HEAVY_CLICK:
             aacEffectId = RICHTAP_JND_HEAVY_CLICK;
             hwWaveform = 4;
-            hwVmax = 2500;
+            hwDurationMs = 14;
             break;
 
         default:
@@ -495,25 +596,67 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
     // keeps it as the current gain, while applyFullAmplitude() restores the
     // pre-percent behavior when no amplitude was set for this effect.
     bool explicitAmplitude;
+    [[maybe_unused]] float effectAmplitude = 1.0f;
     {
         std::lock_guard<std::mutex> lock(mAmplitudeMutex);
         explicitAmplitude = mAmplitudeSetForEffect;
+        effectAmplitude = explicitAmplitude ? mCurrentAmplitude : 1.0f;
         mAmplitudeSetForEffect = false;
     }
-    if (explicitAmplitude) {
-        beginVibration();
-    } else {
-        applyFullAmplitude();
+
+    bool preferSram = false;
+#ifdef USES_OPLUS_AWINIC
+    preferSram = mUseSysfsWaveform;
+#endif
+
+    if (!preferSram) {
+        if (explicitAmplitude) {
+            beginVibration();
+        } else {
+            applyFullAmplitude();
+        }
     }
+
+    int hwGain = RICHTAP_SRAM_MAX_GAIN;
+#ifdef USES_OPLUS_AWINIC
+    hwGain = sramGainFromScale(scaleForEffectStrength(es) * hwGainScale * effectAmplitude);
+#endif
+
+    bool usedSram = false;
     int32_t ret = playTactileEffect(aacEffectId, strengthForEffectStrength(es), hwWaveform,
-                                    hwVmax);
+                                    hwVmax, hwGain, hwDurationMs, preferSram, mRtpActive,
+                                    &usedSram);
     if (ret <= 0) {
         ALOGE("playTactileEffect failed: %d\n", ret);
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
     }
 
+#ifdef USES_OPLUS_AWINIC
+    if (usedSram && isDoubleClick) {
+        int32_t totalDurationMs = hwDurationMs * 2 + RICHTAP_SRAM_DOUBLE_CLICK_GAP_MS;
+        std::thread([this, callback, hwWaveform, hwVmax, hwGain, hwDurationMs, myId] {
+            usleep((hwDurationMs + RICHTAP_SRAM_DOUBLE_CLICK_GAP_MS) * 1000);
+            if (mActiveCompositionId != myId) {
+                return;
+            }
+            sysfsWaveform(hwWaveform, hwVmax, hwGain);
+            usleep((hwDurationMs + RICHTAP_SRAM_PIPELINE_MARGIN_MS) * 1000);
+            if (mActiveCompositionId == myId && callback != nullptr) {
+                callback->onComplete();
+            }
+        }).detach();
+
+        if (_aidl_return != nullptr) {
+            *_aidl_return = totalDurationMs;
+        }
+        return ndk::ScopedAStatus::ok();
+    }
+#endif
+
     if (callback != nullptr) {
-        int32_t waitMs = ret + RICHTAP_RTP_PIPELINE_MARGIN_MS;
+        int32_t marginMs = usedSram ? RICHTAP_SRAM_PIPELINE_MARGIN_MS
+                                    : RICHTAP_RTP_PIPELINE_MARGIN_MS;
+        int32_t waitMs = ret + marginMs;
         std::thread([this, callback, waitMs, myId] {
             usleep(waitMs * 1000);
             if (mActiveCompositionId == myId) {
@@ -609,7 +752,11 @@ ndk::ScopedAStatus Vibrator::getPrimitiveDuration(CompositePrimitive primitive,
     if (durationMs == nullptr) {
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
     }
-    int32_t duration = primitiveDurationMs(primitive);
+    bool useSram = false;
+#ifdef USES_OPLUS_AWINIC
+    useSram = mUseSysfsWaveform;
+#endif
+    int32_t duration = primitiveDurationMs(primitive, useSram);
     if (duration < 0) {
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_UNSUPPORTED_OPERATION));
     }
@@ -647,9 +794,16 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
             // Superseded before playback started; keep the newer vibration's gain.
             return;
         }
-        applyFullAmplitude();
+        bool preferSram = false;
+#ifdef USES_OPLUS_AWINIC
+        preferSram = mUseSysfsWaveform;
+#endif
+        if (!preferSram) {
+            applyFullAmplitude();
+        }
 
         bool playedAny = false;
+        bool lastUsedSram = false;
         for (size_t i = 0; i < composite.size(); ++i) {
             const auto& e = composite[i];
             if (e.delayMs > 0) {
@@ -667,7 +821,7 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
                 continue;
             }
 
-            int32_t durationMs = primitiveDurationMs(e.primitive);
+            int32_t durationMs = primitiveDurationMs(e.primitive, preferSram);
             if (e.scale == 0.0f) {
                 // The framework reserves the primitive's duration even when it
                 // is muted, so keep the composition timeline intact.
@@ -678,25 +832,36 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
             PrimitivePlayback playback = primitivePlayback(e.primitive);
             int32_t strength =
                     std::clamp(static_cast<int32_t>(e.scale * 100.0f + 0.5f), 1, 100);
+            int hwGain = RICHTAP_SRAM_MAX_GAIN;
+#ifdef USES_OPLUS_AWINIC
+            hwGain = sramGainFromScale(e.scale * playback.hwGainScale);
+#endif
+            bool usedSram = false;
             int32_t dur = playTactileEffect(playback.aacId, strength, playback.hwWaveform,
-                                            playback.hwVmax);
+                                            playback.hwVmax, hwGain, playback.hwDurationMs,
+                                            preferSram, mRtpActive, &usedSram);
             if (dur <= 0) {
                 dur = durationMs;
             }
             playedAny = true;
+            lastUsedSram = usedSram;
 
+            int32_t stepMarginMs = usedSram ? RICHTAP_SRAM_COMPOSE_STEP_MARGIN_MS
+                                            : RICHTAP_COMPOSE_STEP_MARGIN_MS;
             int32_t stepWaitMs = dur;
             if (i + 1 < composite.size()) {
                 int32_t nextDelayMs = composite[i + 1].delayMs;
-                if (nextDelayMs < RICHTAP_COMPOSE_STEP_MARGIN_MS) {
-                    stepWaitMs += (RICHTAP_COMPOSE_STEP_MARGIN_MS - nextDelayMs);
+                if (nextDelayMs < stepMarginMs) {
+                    stepWaitMs += (stepMarginMs - nextDelayMs);
                 }
             }
             usleep(stepWaitMs * 1000);
         }
 
         if (playedAny && mActiveCompositionId == myId) {
-            usleep(RICHTAP_RTP_PIPELINE_MARGIN_MS * 1000);
+            int32_t tailMarginMs = lastUsedSram ? RICHTAP_SRAM_PIPELINE_MARGIN_MS
+                                                : RICHTAP_RTP_PIPELINE_MARGIN_MS;
+            usleep(tailMarginMs * 1000);
         }
 
         if (mActiveCompositionId == myId && callback != nullptr) {

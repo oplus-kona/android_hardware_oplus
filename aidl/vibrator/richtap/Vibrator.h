@@ -60,8 +60,10 @@ class Vibrator : public BnVibrator {
     bool mAmplitudeSetSinceStart = false;
     bool mAmplitudeSetForEffect = false;
     bool mAacReady = false;
+    std::atomic<bool> mRtpActive{false};
 #ifdef USES_OPLUS_AWINIC
     bool mUseSysfsOnOff = false;
+    bool mUseSysfsWaveform = false;
 #endif
 };
 
