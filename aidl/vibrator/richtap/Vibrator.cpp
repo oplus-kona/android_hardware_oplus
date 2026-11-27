@@ -67,17 +67,24 @@ static constexpr int32_t RICHTAP_RTP_PIPELINE_MARGIN_MS = 15;
 // RICHTAP_RTP_MODE stop cuts off the previous tick mid-waveform (GLB_ST=0x08).
 static constexpr int32_t RICHTAP_COMPOSE_STEP_MARGIN_MS = 8;
 
-// Hardware SRAM playback via /sys/class/leds/vibrator/brightness runs on the
-// Linux LED classdev set_brightness_delayed kworker (~1 ms wakeup + ~5-6 ms
-// I2C setup and 2 ms boost settle before GO=1). Keep enough completion and
-// inter-primitive margin so trailing off() or back-to-back compose() ticks
-// never clip the active braking tail (verified via I2C ftrace).
+// Hardware SRAM playback via RICHTAP_PLAY_SRAM ioctl starts GO=1 synchronously
+// before returning (~3 ms total setup, zero LED kworker hop), so only a brief
+// active-braking margin is needed.
+static constexpr int32_t RICHTAP_IOCTL_SRAM_PIPELINE_MARGIN_MS = 3;
+static constexpr int32_t RICHTAP_IOCTL_SRAM_COMPOSE_STEP_MARGIN_MS = 2;
+
+// Fallback sysfs SRAM playback via /sys/class/leds/vibrator/brightness runs on
+// the Linux LED classdev set_brightness_delayed kworker (~1 ms wakeup + ~5-6 ms
+// I2C setup and 2 ms boost settle before GO=1), verified via I2C ftrace.
 static constexpr int32_t RICHTAP_SRAM_PIPELINE_MARGIN_MS = 10;
 static constexpr int32_t RICHTAP_SRAM_COMPOSE_STEP_MARGIN_MS = 8;
 static constexpr int RICHTAP_SRAM_VMAX_MV = 2500;
 static constexpr int RICHTAP_SRAM_MAX_GAIN = 0x80;
 
 #ifdef USES_OPLUS_AWINIC
+// Atomic AW8697 F0-locked SRAM playback: arg = wav[6:0] | gain[15:8] | bst_vol[20:16]
+static constexpr unsigned long RICHTAP_IOCTL_PLAY_SRAM = 0x5220;
+static constexpr uint8_t RICHTAP_SRAM_BST_VOL = 0x16;  // 8.75V boost rail
 static constexpr int32_t RICHTAP_SRAM_DOUBLE_CLICK_GAP_MS = 65;
 static constexpr int RICHTAP_SRAM_MIN_GAIN = 0x18;
 #define RICHTAP_OPLUS_ACTIVATE_NODE   "/sys/class/leds/vibrator/oplus_activate"
@@ -334,26 +341,75 @@ static PrimitivePlayback primitivePlayback(CompositePrimitive primitive) {
     }
 }
 
-static int32_t playTactileEffect(uint32_t aacEffectId, int32_t strength, int hwWaveformIndex,
-                                 int hwVmax, int hwGain, int32_t hwDurationMs,
-                                 bool preferSram, std::atomic<bool>& rtpActive, bool* usedSram) {
-    if (usedSram != nullptr) {
-        *usedSram = false;
+int Vibrator::playSramWaveform(int waveformIndex, int vmax, int gain, PlaybackPath* pathOut) {
+    if (pathOut != nullptr) {
+        *pathOut = PlaybackPath::NONE;
     }
 
 #ifdef USES_OPLUS_AWINIC
-    // 1. Prefer AW8697 native F0-locked OxygenOS SRAM waveform via sysfs for
-    // crisp, low-latency (~3 ms) tactile transients at 8.75V boost rail.
-    if (preferSram && hwWaveformIndex > 0) {
-        if (rtpActive.exchange(false)) {
+    if (waveformIndex <= 0) {
+        return -EINVAL;
+    }
+
+    int clampedGain = std::clamp(gain, RICHTAP_SRAM_MIN_GAIN, RICHTAP_SRAM_MAX_GAIN);
+
+    // 1. Atomic kernel ioctl path: single syscall, synchronous GO=1 (~3 ms,
+    // zero sysfs open/close overhead and zero LED kworker hop).
+    if (mHapticFd >= 0 && mIoctlSramSupported.load()) {
+        unsigned long packed =
+                static_cast<unsigned long>(waveformIndex & 0x7f) |
+                (static_cast<unsigned long>(clampedGain & 0xff) << 8) |
+                (static_cast<unsigned long>(RICHTAP_SRAM_BST_VOL & 0x1f) << 16);
+        if (ioctl(mHapticFd, RICHTAP_IOCTL_PLAY_SRAM, packed) == 0) {
+            mRtpActive.store(false);
+            if (pathOut != nullptr) {
+                *pathOut = PlaybackPath::IOCTL_SRAM;
+            }
+            return 0;
+        }
+        if (errno == ENOTTY || errno == EOPNOTSUPP) {
+            ALOGI("RICHTAP_PLAY_SRAM ioctl unsupported by kernel; falling back to sysfs SRAM");
+            mIoctlSramSupported.store(false);
+        }
+    }
+
+    // 2. Fallback to sysfs SRAM path if kernel lacks RICHTAP_PLAY_SRAM.
+    if (mUseSysfsWaveform) {
+        if (mRtpActive.exchange(false)) {
             int32_t stopState = -1;
             aac_vibra_stop(&stopState);
         }
-        int ret = sysfsWaveform(hwWaveformIndex, hwVmax, hwGain);
+        int ret = sysfsWaveform(waveformIndex, vmax, clampedGain);
         if (ret == 0) {
-            if (usedSram != nullptr) {
-                *usedSram = true;
+            mSysfsActive.store(true);
+            if (pathOut != nullptr) {
+                *pathOut = PlaybackPath::SYSFS_SRAM;
             }
+            return 0;
+        }
+        return ret;
+    }
+#else
+    (void)waveformIndex;
+    (void)vmax;
+    (void)gain;
+#endif
+
+    return -ENOENT;
+}
+
+int32_t Vibrator::playTactileEffect(uint32_t aacEffectId, int32_t strength, int hwWaveformIndex,
+                                    int hwVmax, int hwGain, int32_t hwDurationMs, bool preferSram,
+                                    PlaybackPath* pathOut) {
+    if (pathOut != nullptr) {
+        *pathOut = PlaybackPath::NONE;
+    }
+
+#ifdef USES_OPLUS_AWINIC
+    // 1. Prefer AW8697 native F0-locked OxygenOS SRAM waveform (atomic ioctl
+    // first, sysfs fallback) for crisp tactile transients at 8.75V boost rail.
+    if (preferSram && hwWaveformIndex > 0) {
+        if (playSramWaveform(hwWaveformIndex, hwVmax, hwGain, pathOut) == 0) {
             return hwDurationMs > 0 ? hwDurationMs : 15;
         }
     }
@@ -368,13 +424,20 @@ static int32_t playTactileEffect(uint32_t aacEffectId, int32_t strength, int hwW
     // 2. Fallback to RichTap AAC looper playback
     int32_t dur = aac_vibra_looper_prebaked_effect(aacEffectId, strength);
     if (dur > 0) {
-        rtpActive.store(true);
+        mRtpActive.store(true);
+        if (pathOut != nullptr) {
+            *pathOut = PlaybackPath::RICHTAP_RTP;
+        }
         return dur;
     }
 
 #ifdef USES_OPLUS_AWINIC
     // 3. Fallback to short sysfs on-pulse
     if (sysfsOn(15) == 0) {
+        mSysfsActive.store(true);
+        if (pathOut != nullptr) {
+            *pathOut = PlaybackPath::SYSFS_SRAM;
+        }
         return 15;
     }
 #endif
@@ -382,21 +445,222 @@ static int32_t playTactileEffect(uint32_t aacEffectId, int32_t strength, int hwW
     return -1;
 }
 
+uint64_t Vibrator::nextCompositionId() {
+    uint64_t nextId;
+    {
+        std::lock_guard<std::mutex> lock(mWorkerMutex);
+        nextId = ++mActiveCompositionId;
+        mHasPendingJob = false;
+        mPendingJob = {};
+    }
+    mWorkerCv.notify_one();
+    return nextId;
+}
+
+void Vibrator::submitJob(WorkerJob&& job) {
+    {
+        std::lock_guard<std::mutex> lock(mWorkerMutex);
+        if (mWorkerShutdown.load() || mActiveCompositionId.load() != job.id) {
+            return;
+        }
+        mPendingJob = std::move(job);
+        mHasPendingJob = true;
+    }
+    mWorkerCv.notify_one();
+}
+
+bool Vibrator::waitInterruptible(uint64_t jobId, int32_t ms) {
+    if (ms <= 0) {
+        return !mWorkerShutdown.load() && mActiveCompositionId.load() == jobId;
+    }
+    std::unique_lock<std::mutex> lock(mWorkerMutex);
+    bool interrupted = mWorkerCv.wait_for(lock, std::chrono::milliseconds(ms), [this, jobId]() {
+        return mWorkerShutdown.load() || mActiveCompositionId.load() != jobId;
+    });
+    return !interrupted && !mWorkerShutdown.load() && mActiveCompositionId.load() == jobId;
+}
+
+void Vibrator::workerLoop() {
+    while (true) {
+        WorkerJob job;
+        {
+            std::unique_lock<std::mutex> lock(mWorkerMutex);
+            mWorkerCv.wait(lock, [this]() { return mWorkerShutdown.load() || mHasPendingJob; });
+            if (mWorkerShutdown.load()) {
+                return;
+            }
+            job = std::move(mPendingJob);
+            mPendingJob = {};
+            mHasPendingJob = false;
+        }
+
+        if (mActiveCompositionId.load() != job.id) {
+            continue;
+        }
+
+        switch (job.type) {
+            case WorkerJobType::CALLBACK_DELAY: {
+                if (waitInterruptible(job.id, job.waitMs)) {
+                    if (job.clearRtpAndEnd) {
+                        mRtpActive.store(false);
+                        endVibration();
+                    }
+                    if (job.callback != nullptr && mActiveCompositionId.load() == job.id) {
+                        job.callback->onComplete();
+                    }
+                }
+                break;
+            }
+
+            case WorkerJobType::DOUBLE_CLICK: {
+#ifdef USES_OPLUS_AWINIC
+                if (!waitInterruptible(job.id, job.hwDurationMs + RICHTAP_SRAM_DOUBLE_CLICK_GAP_MS)) {
+                    break;
+                }
+                PlaybackPath secondPath = PlaybackPath::NONE;
+                playSramWaveform(job.hwWaveform, job.hwVmax, job.hwGain, &secondPath);
+                int32_t marginMs = (secondPath == PlaybackPath::IOCTL_SRAM)
+                                           ? RICHTAP_IOCTL_SRAM_PIPELINE_MARGIN_MS
+                                           : RICHTAP_SRAM_PIPELINE_MARGIN_MS;
+                if (waitInterruptible(job.id, job.hwDurationMs + marginMs)) {
+                    if (job.callback != nullptr && mActiveCompositionId.load() == job.id) {
+                        job.callback->onComplete();
+                    }
+                }
+#endif
+                break;
+            }
+
+            case WorkerJobType::COMPOSE: {
+                bool preferSram = false;
+#ifdef USES_OPLUS_AWINIC
+                preferSram = mIoctlSramSupported.load() || mUseSysfsWaveform;
+#endif
+                if (!preferSram) {
+                    applyFullAmplitude();
+                }
+
+                bool playedAny = false;
+                PlaybackPath lastPath = PlaybackPath::NONE;
+                for (size_t i = 0; i < job.composite.size(); ++i) {
+                    const auto& e = job.composite[i];
+                    if (e.delayMs > 0 && !waitInterruptible(job.id, e.delayMs)) {
+                        break;
+                    }
+                    if (mActiveCompositionId.load() != job.id) {
+                        break;
+                    }
+                    if (e.primitive == CompositePrimitive::NOOP) {
+                        continue;
+                    }
+
+                    int32_t durationMs = primitiveDurationMs(e.primitive, preferSram);
+                    if (e.scale == 0.0f) {
+                        // Reserve the primitive's duration even when muted.
+                        if (!waitInterruptible(job.id, durationMs)) {
+                            break;
+                        }
+                        continue;
+                    }
+
+                    PrimitivePlayback playback = primitivePlayback(e.primitive);
+                    int32_t strength =
+                            std::clamp(static_cast<int32_t>(e.scale * 100.0f + 0.5f), 1, 100);
+                    int hwGain = RICHTAP_SRAM_MAX_GAIN;
+#ifdef USES_OPLUS_AWINIC
+                    hwGain = sramGainFromScale(e.scale * playback.hwGainScale);
+#endif
+                    PlaybackPath path = PlaybackPath::NONE;
+                    int32_t dur = playTactileEffect(playback.aacId, strength, playback.hwWaveform,
+                                                    playback.hwVmax, hwGain, playback.hwDurationMs,
+                                                    preferSram, &path);
+                    if (dur <= 0) {
+                        dur = durationMs;
+                    }
+                    playedAny = true;
+                    lastPath = path;
+
+                    int32_t stepMarginMs;
+                    switch (path) {
+                        case PlaybackPath::IOCTL_SRAM:
+                            stepMarginMs = RICHTAP_IOCTL_SRAM_COMPOSE_STEP_MARGIN_MS;
+                            break;
+                        case PlaybackPath::SYSFS_SRAM:
+                            stepMarginMs = RICHTAP_SRAM_COMPOSE_STEP_MARGIN_MS;
+                            break;
+                        default:
+                            stepMarginMs = RICHTAP_COMPOSE_STEP_MARGIN_MS;
+                            break;
+                    }
+
+                    int32_t stepWaitMs = dur;
+                    if (i + 1 < job.composite.size()) {
+                        int32_t nextDelayMs = job.composite[i + 1].delayMs;
+                        if (nextDelayMs < stepMarginMs) {
+                            stepWaitMs += (stepMarginMs - nextDelayMs);
+                        }
+                    }
+                    if (!waitInterruptible(job.id, stepWaitMs)) {
+                        break;
+                    }
+                }
+
+                if (playedAny && mActiveCompositionId.load() == job.id) {
+                    int32_t tailMarginMs;
+                    switch (lastPath) {
+                        case PlaybackPath::IOCTL_SRAM:
+                            tailMarginMs = RICHTAP_IOCTL_SRAM_PIPELINE_MARGIN_MS;
+                            break;
+                        case PlaybackPath::SYSFS_SRAM:
+                            tailMarginMs = RICHTAP_SRAM_PIPELINE_MARGIN_MS;
+                            break;
+                        default:
+                            tailMarginMs = RICHTAP_RTP_PIPELINE_MARGIN_MS;
+                            break;
+                    }
+                    if (waitInterruptible(job.id, tailMarginMs)) {
+                        if (job.callback != nullptr && mActiveCompositionId.load() == job.id) {
+                            job.callback->onComplete();
+                        }
+                    }
+                } else if (!playedAny && mActiveCompositionId.load() == job.id &&
+                           job.callback != nullptr) {
+                    job.callback->onComplete();
+                }
+                break;
+            }
+
+            case WorkerJobType::NONE:
+            default:
+                break;
+        }
+    }
+}
+
 Vibrator::Vibrator() {
     uint32_t deviceType = 0;
+
+    mHapticFd = open(RICHTAP_HAPTIC_DEVICE_NODE, O_RDWR | O_CLOEXEC);
+    if (mHapticFd >= 0) {
+#ifdef USES_OPLUS_AWINIC
+        mIoctlSramSupported.store(true);
+#endif
+    } else {
+        ALOGW("Failed to open %s: %d", RICHTAP_HAPTIC_DEVICE_NODE, errno);
+    }
 
 #ifdef USES_OPLUS_AWINIC
     mUseSysfsOnOff = hasSysfsOnOffSupport();
     mUseSysfsWaveform = hasSysfsWaveformSupport();
-    if (mUseSysfsOnOff || mUseSysfsWaveform) {
-        ALOGI("Sysfs backend ready (onOff=%d, sramWaveform=%d)", mUseSysfsOnOff,
-              mUseSysfsWaveform);
-    }
+    ALOGI("AW8697 backend ready (ioctlSram=%d, sysfsSram=%d, sysfsOnOff=%d)",
+          mIoctlSramSupported.load(), mUseSysfsWaveform, mUseSysfsOnOff);
 #endif
+
+    mWorkerThread = std::thread(&Vibrator::workerLoop, this);
 
     int32_t ret = aac_vibra_init(&deviceType);
     if (ret) {
-        ALOGE("AAC init failed: %d (hardware sysfs fallback will be active)\n", ret);
+        ALOGE("AAC init failed: %d (hardware SRAM/sysfs backend remains active)\n", ret);
         return;
     }
 
@@ -404,6 +668,24 @@ Vibrator::Vibrator() {
     mAacReady = true;
 
     ALOGI("AAC init success: %u\n", deviceType);
+}
+
+Vibrator::~Vibrator() {
+    {
+        std::lock_guard<std::mutex> lock(mWorkerMutex);
+        mWorkerShutdown.store(true);
+        mActiveCompositionId++;
+        mHasPendingJob = false;
+        mPendingJob = {};
+    }
+    mWorkerCv.notify_one();
+    if (mWorkerThread.joinable()) {
+        mWorkerThread.join();
+    }
+    if (mHapticFd >= 0) {
+        close(mHapticFd);
+        mHapticFd = -1;
+    }
 }
 
 ndk::ScopedAStatus Vibrator::getCapabilities(int32_t* _aidl_return) {
@@ -456,10 +738,10 @@ void Vibrator::applyFullAmplitude() {
 }
 
 ndk::ScopedAStatus Vibrator::off() {
-    mActiveCompositionId++;
+    nextCompositionId();
 
 #ifdef USES_OPLUS_AWINIC
-    if (mUseSysfsOnOff || mUseSysfsWaveform) {
+    if (mSysfsActive.exchange(false) && (mUseSysfsOnOff || mUseSysfsWaveform)) {
         int ret = sysfsOff();
         if (ret) {
             ALOGW("Sysfs off failed: %d\n", ret);
@@ -487,7 +769,7 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         return ndk::ScopedAStatus::ok();
     }
 
-    uint64_t myId = ++mActiveCompositionId;
+    uint64_t myId = nextCompositionId();
     beginVibration();
 
     // The AAC looper already turns short on() requests into crisp transients
@@ -500,6 +782,7 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
         if (mUseSysfsOnOff) {
             int sysRet = sysfsOn(timeoutMs);
             if (sysRet == 0) {
+                mSysfsActive.store(true);
                 ret = timeoutMs;
             }
         }
@@ -513,15 +796,13 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
     }
 
     if (callback != nullptr) {
-        int32_t waitMs = ret + (ret < 56 ? RICHTAP_RTP_PIPELINE_MARGIN_MS : 0);
-        std::thread([this, callback, waitMs, myId] {
-            usleep(waitMs * 1000);
-            if (mActiveCompositionId == myId) {
-                mRtpActive.store(false);
-                endVibration();
-                callback->onComplete();
-            }
-        }).detach();
+        WorkerJob job;
+        job.id = myId;
+        job.type = WorkerJobType::CALLBACK_DELAY;
+        job.callback = callback;
+        job.waitMs = ret + (ret < 56 ? RICHTAP_RTP_PIPELINE_MARGIN_MS : 0);
+        job.clearRtpAndEnd = true;
+        submitJob(std::move(job));
     }
 
     return ndk::ScopedAStatus::ok();
@@ -590,7 +871,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
     }
 
     // Only cancel the running vibration once the request is known to be valid.
-    uint64_t myId = ++mActiveCompositionId;
+    uint64_t myId = nextCompositionId();
 
     // A framework-provided amplitude applies to this effect only. beginVibration()
     // keeps it as the current gain, while applyFullAmplitude() restores the
@@ -606,7 +887,7 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
 
     bool preferSram = false;
 #ifdef USES_OPLUS_AWINIC
-    preferSram = mUseSysfsWaveform;
+    preferSram = mIoctlSramSupported.load() || mUseSysfsWaveform;
 #endif
 
     if (!preferSram) {
@@ -622,29 +903,28 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
     hwGain = sramGainFromScale(scaleForEffectStrength(es) * hwGainScale * effectAmplitude);
 #endif
 
-    bool usedSram = false;
+    PlaybackPath path = PlaybackPath::NONE;
     int32_t ret = playTactileEffect(aacEffectId, strengthForEffectStrength(es), hwWaveform,
-                                    hwVmax, hwGain, hwDurationMs, preferSram, mRtpActive,
-                                    &usedSram);
+                                    hwVmax, hwGain, hwDurationMs, preferSram, &path);
     if (ret <= 0) {
         ALOGE("playTactileEffect failed: %d\n", ret);
         return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_SERVICE_SPECIFIC));
     }
 
 #ifdef USES_OPLUS_AWINIC
+    bool usedSram = (path == PlaybackPath::IOCTL_SRAM || path == PlaybackPath::SYSFS_SRAM);
     if (usedSram && isDoubleClick) {
         int32_t totalDurationMs = hwDurationMs * 2 + RICHTAP_SRAM_DOUBLE_CLICK_GAP_MS;
-        std::thread([this, callback, hwWaveform, hwVmax, hwGain, hwDurationMs, myId] {
-            usleep((hwDurationMs + RICHTAP_SRAM_DOUBLE_CLICK_GAP_MS) * 1000);
-            if (mActiveCompositionId != myId) {
-                return;
-            }
-            sysfsWaveform(hwWaveform, hwVmax, hwGain);
-            usleep((hwDurationMs + RICHTAP_SRAM_PIPELINE_MARGIN_MS) * 1000);
-            if (mActiveCompositionId == myId && callback != nullptr) {
-                callback->onComplete();
-            }
-        }).detach();
+        WorkerJob job;
+        job.id = myId;
+        job.type = WorkerJobType::DOUBLE_CLICK;
+        job.callback = callback;
+        job.hwWaveform = hwWaveform;
+        job.hwVmax = hwVmax;
+        job.hwGain = hwGain;
+        job.hwDurationMs = hwDurationMs;
+        job.firstTapPath = path;
+        submitJob(std::move(job));
 
         if (_aidl_return != nullptr) {
             *_aidl_return = totalDurationMs;
@@ -654,15 +934,24 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
 #endif
 
     if (callback != nullptr) {
-        int32_t marginMs = usedSram ? RICHTAP_SRAM_PIPELINE_MARGIN_MS
-                                    : RICHTAP_RTP_PIPELINE_MARGIN_MS;
-        int32_t waitMs = ret + marginMs;
-        std::thread([this, callback, waitMs, myId] {
-            usleep(waitMs * 1000);
-            if (mActiveCompositionId == myId) {
-                callback->onComplete();
-            }
-        }).detach();
+        int32_t marginMs;
+        switch (path) {
+            case PlaybackPath::IOCTL_SRAM:
+                marginMs = RICHTAP_IOCTL_SRAM_PIPELINE_MARGIN_MS;
+                break;
+            case PlaybackPath::SYSFS_SRAM:
+                marginMs = RICHTAP_SRAM_PIPELINE_MARGIN_MS;
+                break;
+            default:
+                marginMs = RICHTAP_RTP_PIPELINE_MARGIN_MS;
+                break;
+        }
+        WorkerJob job;
+        job.id = myId;
+        job.type = WorkerJobType::CALLBACK_DELAY;
+        job.callback = callback;
+        job.waitMs = ret + marginMs;
+        submitJob(std::move(job));
     }
 
     if (_aidl_return != nullptr) {
@@ -754,7 +1043,7 @@ ndk::ScopedAStatus Vibrator::getPrimitiveDuration(CompositePrimitive primitive,
     }
     bool useSram = false;
 #ifdef USES_OPLUS_AWINIC
-    useSram = mUseSysfsWaveform;
+    useSram = mIoctlSramSupported.load() || mUseSysfsWaveform;
 #endif
     int32_t duration = primitiveDurationMs(primitive, useSram);
     if (duration < 0) {
@@ -787,87 +1076,13 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
         }
     }
 
-    uint64_t myId = ++mActiveCompositionId;
-
-    std::thread([this, composite, callback, myId]() {
-        if (mActiveCompositionId != myId) {
-            // Superseded before playback started; keep the newer vibration's gain.
-            return;
-        }
-        bool preferSram = false;
-#ifdef USES_OPLUS_AWINIC
-        preferSram = mUseSysfsWaveform;
-#endif
-        if (!preferSram) {
-            applyFullAmplitude();
-        }
-
-        bool playedAny = false;
-        bool lastUsedSram = false;
-        for (size_t i = 0; i < composite.size(); ++i) {
-            const auto& e = composite[i];
-            if (e.delayMs > 0) {
-                if (mActiveCompositionId != myId) {
-                    break;
-                }
-                usleep(e.delayMs * 1000);
-            }
-
-            if (mActiveCompositionId != myId) {
-                break;
-            }
-
-            if (e.primitive == CompositePrimitive::NOOP) {
-                continue;
-            }
-
-            int32_t durationMs = primitiveDurationMs(e.primitive, preferSram);
-            if (e.scale == 0.0f) {
-                // The framework reserves the primitive's duration even when it
-                // is muted, so keep the composition timeline intact.
-                usleep(durationMs * 1000);
-                continue;
-            }
-
-            PrimitivePlayback playback = primitivePlayback(e.primitive);
-            int32_t strength =
-                    std::clamp(static_cast<int32_t>(e.scale * 100.0f + 0.5f), 1, 100);
-            int hwGain = RICHTAP_SRAM_MAX_GAIN;
-#ifdef USES_OPLUS_AWINIC
-            hwGain = sramGainFromScale(e.scale * playback.hwGainScale);
-#endif
-            bool usedSram = false;
-            int32_t dur = playTactileEffect(playback.aacId, strength, playback.hwWaveform,
-                                            playback.hwVmax, hwGain, playback.hwDurationMs,
-                                            preferSram, mRtpActive, &usedSram);
-            if (dur <= 0) {
-                dur = durationMs;
-            }
-            playedAny = true;
-            lastUsedSram = usedSram;
-
-            int32_t stepMarginMs = usedSram ? RICHTAP_SRAM_COMPOSE_STEP_MARGIN_MS
-                                            : RICHTAP_COMPOSE_STEP_MARGIN_MS;
-            int32_t stepWaitMs = dur;
-            if (i + 1 < composite.size()) {
-                int32_t nextDelayMs = composite[i + 1].delayMs;
-                if (nextDelayMs < stepMarginMs) {
-                    stepWaitMs += (stepMarginMs - nextDelayMs);
-                }
-            }
-            usleep(stepWaitMs * 1000);
-        }
-
-        if (playedAny && mActiveCompositionId == myId) {
-            int32_t tailMarginMs = lastUsedSram ? RICHTAP_SRAM_PIPELINE_MARGIN_MS
-                                                : RICHTAP_RTP_PIPELINE_MARGIN_MS;
-            usleep(tailMarginMs * 1000);
-        }
-
-        if (mActiveCompositionId == myId && callback != nullptr) {
-            callback->onComplete();
-        }
-    }).detach();
+    uint64_t myId = nextCompositionId();
+    WorkerJob job;
+    job.id = myId;
+    job.type = WorkerJobType::COMPOSE;
+    job.callback = callback;
+    job.composite = composite;
+    submitJob(std::move(job));
 
     return ndk::ScopedAStatus::ok();
 }
@@ -893,13 +1108,20 @@ ndk::ScopedAStatus Vibrator::getResonantFrequency(float* resonantFreqHz) {
     float frequency = RICHTAP_DEFAULT_F0_HZ;
 
     // RICHTAP_GET_F0 returns the calibrated resonant frequency in 0.1 Hz units.
-    int fd = open(RICHTAP_HAPTIC_DEVICE_NODE, O_RDWR | O_CLOEXEC);
+    int fd = mHapticFd;
+    bool ownedFd = false;
+    if (fd < 0) {
+        fd = open(RICHTAP_HAPTIC_DEVICE_NODE, O_RDWR | O_CLOEXEC);
+        ownedFd = (fd >= 0);
+    }
     if (fd >= 0) {
         uint32_t f0 = 0;
         if (ioctl(fd, RICHTAP_IOCTL_GET_F0, &f0) == 0 && f0 >= 1000u && f0 <= 3000u) {
             frequency = static_cast<float>(f0) / 10.0f;
         }
-        close(fd);
+        if (ownedFd) {
+            close(fd);
+        }
     }
 
     *resonantFreqHz = frequency;

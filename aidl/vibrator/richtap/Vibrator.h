@@ -6,7 +6,10 @@
 #include <aidl/android/hardware/vibrator/BnVibrator.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 namespace aidl {
 namespace android {
@@ -16,6 +19,7 @@ namespace vibrator {
 class Vibrator : public BnVibrator {
   public:
     Vibrator();
+    ~Vibrator() override;
 
     ndk::ScopedAStatus getCapabilities(int32_t* _aidl_return) override;
     ndk::ScopedAStatus off() override;
@@ -49,9 +53,45 @@ class Vibrator : public BnVibrator {
                                    const std::shared_ptr<IVibratorCallback>& callback) override;
 
   private:
+    enum class PlaybackPath {
+        NONE,
+        IOCTL_SRAM,
+        SYSFS_SRAM,
+        RICHTAP_RTP,
+    };
+
+    enum class WorkerJobType {
+        NONE,
+        CALLBACK_DELAY,
+        DOUBLE_CLICK,
+        COMPOSE,
+    };
+
+    struct WorkerJob {
+        uint64_t id = 0;
+        WorkerJobType type = WorkerJobType::NONE;
+        std::shared_ptr<IVibratorCallback> callback;
+        int32_t waitMs = 0;
+        bool clearRtpAndEnd = false;
+        int hwWaveform = 0;
+        int hwVmax = 0;
+        int hwGain = 0;
+        int32_t hwDurationMs = 0;
+        PlaybackPath firstTapPath = PlaybackPath::NONE;
+        std::vector<CompositeEffect> composite;
+    };
+
     void beginVibration();
     void endVibration();
     void applyFullAmplitude();
+    uint64_t nextCompositionId();
+    void submitJob(WorkerJob&& job);
+    bool waitInterruptible(uint64_t jobId, int32_t ms);
+    void workerLoop();
+    int playSramWaveform(int waveformIndex, int vmax, int gain, PlaybackPath* pathOut);
+    int32_t playTactileEffect(uint32_t aacEffectId, int32_t strength, int hwWaveformIndex,
+                              int hwVmax, int hwGain, int32_t hwDurationMs, bool preferSram,
+                              PlaybackPath* pathOut);
 
     std::atomic<uint64_t> mActiveCompositionId{0};
     std::mutex mAmplitudeMutex;
@@ -61,10 +101,20 @@ class Vibrator : public BnVibrator {
     bool mAmplitudeSetForEffect = false;
     bool mAacReady = false;
     std::atomic<bool> mRtpActive{false};
+    int mHapticFd = -1;
+    std::atomic<bool> mIoctlSramSupported{false};
 #ifdef USES_OPLUS_AWINIC
     bool mUseSysfsOnOff = false;
     bool mUseSysfsWaveform = false;
+    std::atomic<bool> mSysfsActive{false};
 #endif
+
+    std::mutex mWorkerMutex;
+    std::condition_variable mWorkerCv;
+    bool mHasPendingJob = false;
+    WorkerJob mPendingJob;
+    std::atomic<bool> mWorkerShutdown{false};
+    std::thread mWorkerThread;
 };
 
 }  // namespace vibrator
