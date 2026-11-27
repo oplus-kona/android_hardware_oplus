@@ -54,6 +54,12 @@ static constexpr uint32_t RICHTAP_JND_LIGHT_TICK         = 0x300b; // 11 ms
 static constexpr unsigned long RICHTAP_IOCTL_GET_F0 = 0x5211;
 static constexpr float RICHTAP_DEFAULT_F0_HZ = 170.0f;
 
+// Margin added before firing IVibratorCallback::onComplete() for short RTP
+// bursts so VibratorManagerService's trailing off() -> RICHTAP_STOP_MODE does
+// not cut off the waveform's active braking tail while the async looper thread
+// and 400 kHz I2C RTP setup/transfer (~5-10 ms) are still finishing on AW8697.
+static constexpr int32_t RICHTAP_RTP_PIPELINE_MARGIN_MS = 15;
+
 #ifdef USES_OPLUS_AWINIC
 #define RICHTAP_OPLUS_ACTIVATE_NODE   "/sys/class/leds/vibrator/oplus_activate"
 #define RICHTAP_OPLUS_DURATION_NODE   "/sys/class/leds/vibrator/oplus_duration"
@@ -404,8 +410,9 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
     }
 
     if (callback != nullptr) {
-        std::thread([this, callback, ret, myId] {
-            usleep(ret * 1000);
+        int32_t waitMs = ret + (ret < 56 ? RICHTAP_RTP_PIPELINE_MARGIN_MS : 0);
+        std::thread([this, callback, waitMs, myId] {
+            usleep(waitMs * 1000);
             if (mActiveCompositionId == myId) {
                 endVibration();
                 callback->onComplete();
@@ -499,8 +506,9 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength es,
     }
 
     if (callback != nullptr) {
-        std::thread([this, callback, ret, myId] {
-            usleep(ret * 1000);
+        int32_t waitMs = ret + RICHTAP_RTP_PIPELINE_MARGIN_MS;
+        std::thread([this, callback, waitMs, myId] {
+            usleep(waitMs * 1000);
             if (mActiveCompositionId == myId) {
                 callback->onComplete();
             }
@@ -634,6 +642,7 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
         }
         applyFullAmplitude();
 
+        bool playedAny = false;
         for (const auto& e : composite) {
             if (e.delayMs > 0) {
                 if (mActiveCompositionId != myId) {
@@ -666,7 +675,12 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
             if (dur <= 0) {
                 dur = durationMs;
             }
+            playedAny = true;
             usleep(dur * 1000);
+        }
+
+        if (playedAny && mActiveCompositionId == myId) {
+            usleep(RICHTAP_RTP_PIPELINE_MARGIN_MS * 1000);
         }
 
         if (mActiveCompositionId == myId && callback != nullptr) {
