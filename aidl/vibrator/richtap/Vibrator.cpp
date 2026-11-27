@@ -60,6 +60,13 @@ static constexpr float RICHTAP_DEFAULT_F0_HZ = 170.0f;
 // and 400 kHz I2C RTP setup/transfer (~5-10 ms) are still finishing on AW8697.
 static constexpr int32_t RICHTAP_RTP_PIPELINE_MARGIN_MS = 15;
 
+// Minimum inter-primitive slack for compose() when primitives are queued back
+// to back (delayMs < 8 ms, e.g. SystemUI slider 5x LOW_TICK with pause=0 ms).
+// playTactileEffect() dispatches asynchronously to VibratorThread (~6 ms I2C
+// setup before RTP playback starts), so without this slack the next primitive's
+// RICHTAP_RTP_MODE stop cuts off the previous tick mid-waveform (GLB_ST=0x08).
+static constexpr int32_t RICHTAP_COMPOSE_STEP_MARGIN_MS = 8;
+
 #ifdef USES_OPLUS_AWINIC
 #define RICHTAP_OPLUS_ACTIVATE_NODE   "/sys/class/leds/vibrator/oplus_activate"
 #define RICHTAP_OPLUS_DURATION_NODE   "/sys/class/leds/vibrator/oplus_duration"
@@ -643,7 +650,8 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
         applyFullAmplitude();
 
         bool playedAny = false;
-        for (const auto& e : composite) {
+        for (size_t i = 0; i < composite.size(); ++i) {
+            const auto& e = composite[i];
             if (e.delayMs > 0) {
                 if (mActiveCompositionId != myId) {
                     break;
@@ -676,7 +684,15 @@ ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& composi
                 dur = durationMs;
             }
             playedAny = true;
-            usleep(dur * 1000);
+
+            int32_t stepWaitMs = dur;
+            if (i + 1 < composite.size()) {
+                int32_t nextDelayMs = composite[i + 1].delayMs;
+                if (nextDelayMs < RICHTAP_COMPOSE_STEP_MARGIN_MS) {
+                    stepWaitMs += (RICHTAP_COMPOSE_STEP_MARGIN_MS - nextDelayMs);
+                }
+            }
+            usleep(stepWaitMs * 1000);
         }
 
         if (playedAny && mActiveCompositionId == myId) {
