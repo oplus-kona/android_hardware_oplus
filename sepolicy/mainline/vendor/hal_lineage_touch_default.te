@@ -1,2 +1,5 @@
+binder_call(hal_lineage_touch_default, servicemanager)
+hal_attribute_service(hal_lineage_touch, hal_lineage_touch_service)
+
 allow hal_lineage_touch_default vendor_proc_touchpanel:dir r_dir_perms;
 allow hal_lineage_touch_default vendor_proc_touchpanel:file rw_file_perms;
